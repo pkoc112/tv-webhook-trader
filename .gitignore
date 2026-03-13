@@ -1,0 +1,7 @@
+build/
+logs/
+config/api_keys.json
+*.o
+*.d
+.cache/
+compile_commands.json

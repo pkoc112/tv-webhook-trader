@@ -1,0 +1,32 @@
+{
+    "server": {
+        "bind_address": "0.0.0.0",
+        "port": 8443,
+        "ssl_cert_path": "/etc/letsencrypt/live/your-domain.com/fullchain.pem",
+        "ssl_key_path": "/etc/letsencrypt/live/your-domain.com/privkey.pem",
+        "auth_token": "",
+        "allowed_ips": []
+    },
+    "exchange": {
+        "api_key": "YOUR_BITGET_API_KEY",
+        "api_secret": "YOUR_BITGET_API_SECRET",
+        "passphrase": "YOUR_BITGET_PASSPHRASE",
+        "base_url": "https://api.bitget.com",
+        "product_type": "USDT-FUTURES",
+        "margin_coin": "USDT",
+        "margin_mode": "crossed",
+        "default_leverage": 10
+    },
+    "trading": {
+        "default_qty": 0.1,
+        "symbols": ["AAVEUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    },
+    "risk": {
+        "max_position_per_symbol": 1.0,
+        "max_daily_loss": 500.0,
+        "max_drawdown_pct": 5.0,
+        "max_open_orders": 10,
+        "max_order_size": 0.5,
+        "circuit_breaker_loss": 1000.0
+    }
+}

@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C++ HFT Trader Dashboard</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: 'Segoe UI', monospace; background:#0a0a0f; color:#e0e0e0; padding:12px; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:12px; }
+.card { background:#14141f; border:1px solid #2a2a3a; border-radius:8px; padding:16px; }
+.card h3 { color:#8888ff; margin-bottom:10px; font-size:14px; }
+.stat { display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid #1a1a2a; }
+.stat .label { color:#888; }
+.stat .value { font-weight:bold; }
+.positive { color:#00ff88; }
+.negative { color:#ff4444; }
+.badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:bold; }
+.tier-S { background:#ffd700; color:#000; }
+.tier-A { background:#00cc66; color:#000; }
+.tier-B { background:#3399ff; color:#fff; }
+.tier-C { background:#666; color:#fff; }
+.tier-D { background:#cc3333; color:#fff; }
+.tier-X { background:#330000; color:#ff4444; }
+table { width:100%; border-collapse:collapse; font-size:12px; }
+th { background:#1a1a2f; color:#8888ff; padding:6px 8px; text-align:left; position:sticky; top:0; }
+td { padding:4px 8px; border-bottom:1px solid #1a1a2a; }
+tr:hover { background:#1a1a2f; }
+.header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+.header h1 { color:#8888ff; font-size:20px; }
+.header .status { font-size:12px; }
+.shadow-badge { background:#ff8800; color:#000; padding:4px 12px; border-radius:4px; font-weight:bold; }
+.bar { height:6px; background:#1a1a2a; border-radius:3px; margin:4px 0; }
+.bar-fill { height:100%; border-radius:3px; transition:width 0.3s; }
+.scroll-table { max-height:400px; overflow-y:auto; }
+#positions-table, #scores-table { font-size:11px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>C++ HFT Trader</h1>
+  <div class="status">
+    <span id="shadow-badge" style="display:none" class="shadow-badge">SHADOW MODE</span>
+    <span id="last-update">--</span>
+  </div>
+</div>
+
+<div class="grid">
+
+  <!-- 거래 통계 -->
+  <div class="card">
+    <h3>Trading Stats</h3>
+    <div class="stat"><span class="label">Balance</span><span class="value" id="balance">--</span></div>
+    <div class="stat"><span class="label">Peak Balance</span><span class="value" id="peak-balance">--</span></div>
+    <div class="stat"><span class="label">Total PnL</span><span class="value" id="total-pnl">--</span></div>
+    <div class="stat"><span class="label">Total Trades</span><span class="value" id="total-trades">--</span></div>
+    <div class="stat"><span class="label">Win Rate</span><span class="value" id="win-rate">--</span></div>
+    <div class="stat"><span class="label">W / L</span><span class="value" id="wl">--</span></div>
+    <div class="stat"><span class="label">Orders Executed</span><span class="value" id="orders-exec">--</span></div>
+    <div class="stat"><span class="label">Risk Skips</span><span class="value" id="risk-skips">--</span></div>
+  </div>
+
+  <!-- 포트폴리오 리스크 -->
+  <div class="card">
+    <h3>Portfolio Risk</h3>
+    <div class="stat"><span class="label">Open Positions</span><span class="value" id="open-pos">--</span></div>
+    <div class="stat"><span class="label">Daily PnL</span><span class="value" id="daily-pnl">--</span></div>
+    <div class="stat"><span class="label">Weekly PnL</span><span class="value" id="weekly-pnl">--</span></div>
+    <div class="stat"><span class="label">Drawdown</span><span class="value" id="drawdown">--</span></div>
+    <div class="stat"><span class="label">Margin Used</span><span class="value" id="margin-used">--</span></div>
+    <div class="stat">
+      <span class="label">Margin %</span>
+      <span class="value"><div class="bar" style="width:100px;display:inline-block;vertical-align:middle"><div class="bar-fill" id="margin-bar" style="width:0%;background:#3399ff"></div></div> <span id="margin-pct">0%</span></span>
+    </div>
+    <div class="stat"><span class="label">Circuit Breaker</span><span class="value" id="cb-status">--</span></div>
+    <div class="stat"><span class="label">Check Pass Rate</span><span class="value" id="pass-rate">--</span></div>
+  </div>
+
+  <!-- TF 분포 -->
+  <div class="card">
+    <h3>Position Distribution</h3>
+    <div style="display:flex;gap:20px;">
+      <div style="flex:1">
+        <h4 style="color:#666;font-size:11px;margin-bottom:6px;">By Timeframe</h4>
+        <div id="tf-dist">--</div>
+      </div>
+      <div style="flex:1">
+        <h4 style="color:#666;font-size:11px;margin-bottom:6px;">By Tier</h4>
+        <div id="tier-dist">--</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 오픈 포지션 -->
+  <div class="card" style="grid-column: span 2;">
+    <h3>Open Positions (<span id="pos-count">0</span>)</h3>
+    <div class="scroll-table">
+      <table id="positions-table">
+        <thead><tr><th>Symbol</th><th>Side</th><th>TF</th><th>Entry</th><th>Size</th><th>Lev</th><th>Tier</th></tr></thead>
+        <tbody id="positions-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 심볼 스코어 -->
+  <div class="card" style="grid-column: span 2;">
+    <h3>Symbol Scores (<span id="score-count">0</span>)</h3>
+    <div class="scroll-table" style="max-height:500px;">
+      <table id="scores-table">
+        <thead><tr><th>Symbol</th><th>Tier</th><th>Score</th><th>Trades</th><th>WR%</th><th>PnL</th><th>PF</th><th>Exp</th></tr></thead>
+        <tbody id="scores-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const BASE = '';
+const POLL_MS = 5000;
+
+function pnlClass(v) { return v >= 0 ? 'positive' : 'negative'; }
+function fmt(v, d=2) { return v != null ? Number(v).toFixed(d) : '--'; }
+
+async function fetchJson(url) {
+  try {
+    const r = await fetch(BASE + url);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+async function updateStats() {
+  const d = await fetchJson('/api/stats');
+  if (!d) return;
+  document.getElementById('balance').textContent = '$' + fmt(d.balance);
+  document.getElementById('peak-balance').textContent = '$' + fmt(d.peak_balance);
+  const pnl = d.total_pnl;
+  const el = document.getElementById('total-pnl');
+  el.textContent = (pnl >= 0 ? '+' : '') + fmt(pnl, 4) + ' USDT';
+  el.className = 'value ' + pnlClass(pnl);
+  document.getElementById('total-trades').textContent = d.total_trades;
+  document.getElementById('win-rate').textContent = fmt(d.win_rate, 1) + '%';
+  document.getElementById('wl').textContent = d.wins + ' / ' + d.losses;
+  document.getElementById('orders-exec').textContent = d.orders_executed;
+  document.getElementById('risk-skips').textContent = d.risk_skips;
+  if (d.shadow_mode) document.getElementById('shadow-badge').style.display = '';
+}
+
+async function updateRisk() {
+  const d = await fetchJson('/api/risk/status');
+  if (!d) return;
+  const p = d.portfolio || {};
+  document.getElementById('open-pos').textContent = p.total_positions || 0;
+
+  const dp = document.getElementById('daily-pnl');
+  dp.textContent = (p.daily_pnl >= 0 ? '+' : '') + fmt(p.daily_pnl, 4);
+  dp.className = 'value ' + pnlClass(p.daily_pnl);
+
+  const wp = document.getElementById('weekly-pnl');
+  wp.textContent = (p.weekly_pnl >= 0 ? '+' : '') + fmt(p.weekly_pnl, 4);
+  wp.className = 'value ' + pnlClass(p.weekly_pnl);
+
+  document.getElementById('drawdown').textContent = fmt(p.current_drawdown_pct, 2) + '%';
+  document.getElementById('margin-used').textContent = '$' + fmt(p.total_margin_used);
+  document.getElementById('margin-pct').textContent = fmt(p.margin_used_pct, 1) + '%';
+  document.getElementById('margin-bar').style.width = Math.min(p.margin_used_pct || 0, 100) + '%';
+  document.getElementById('margin-bar').style.background =
+    (p.margin_used_pct > 80) ? '#ff4444' : (p.margin_used_pct > 50) ? '#ff8800' : '#3399ff';
+
+  document.getElementById('cb-status').innerHTML =
+    p.circuit_breaker_active ? '<span style="color:#ff4444">ACTIVE</span>' : '<span style="color:#00ff88">OFF</span>';
+
+  const cs = d.check_stats || {};
+  document.getElementById('pass-rate').textContent =
+    fmt(cs.pass_rate, 1) + '% (' + (cs.passed||0) + '/' + (cs.total_checks||0) + ')';
+
+  // TF / Tier 분포
+  const tfDist = p.positions_by_tf || {};
+  let tfHtml = '';
+  for (const [tf, cnt] of Object.entries(tfDist).sort()) {
+    tfHtml += `<div class="stat"><span class="label">${tf}m</span><span class="value">${cnt}</span></div>`;
+  }
+  document.getElementById('tf-dist').innerHTML = tfHtml || '<span style="color:#444">No positions</span>';
+
+  // Tier dist from positions
+  const positions = await fetchJson('/api/positions');
+  const tierCnt = {};
+  if (positions) {
+    positions.forEach(p => { tierCnt[p.tier||'?'] = (tierCnt[p.tier||'?']||0) + 1; });
+  }
+  let tierHtml = '';
+  for (const [t, c] of Object.entries(tierCnt).sort()) {
+    tierHtml += `<div class="stat"><span class="label"><span class="badge tier-${t}">${t}</span></span><span class="value">${c}</span></div>`;
+  }
+  document.getElementById('tier-dist').innerHTML = tierHtml || '<span style="color:#444">No positions</span>';
+}
+
+async function updatePositions() {
+  const d = await fetchJson('/api/positions');
+  if (!d) return;
+  document.getElementById('pos-count').textContent = d.length;
+  const tbody = document.getElementById('positions-body');
+  tbody.innerHTML = d.map(p => `<tr>
+    <td>${p.symbol}</td>
+    <td style="color:${p.side==='long'?'#00ff88':'#ff4444'}">${p.side}</td>
+    <td>${p.timeframe||'-'}m</td>
+    <td>${fmt(p.entry_price, p.entry_price > 100 ? 2 : 6)}</td>
+    <td>${fmt(p.quantity, 6)}</td>
+    <td>${p.leverage}x</td>
+    <td><span class="badge tier-${p.tier}">${p.tier}</span></td>
+  </tr>`).join('');
+}
+
+async function updateScores() {
+  const d = await fetchJson('/api/symbols/scores');
+  if (!d || !d.length) return;
+  document.getElementById('score-count').textContent = d.length;
+  const tbody = document.getElementById('scores-body');
+  tbody.innerHTML = d.slice(0, 100).map(s => `<tr>
+    <td>${s.symbol}</td>
+    <td><span class="badge tier-${s.tier}">${s.tier}</span></td>
+    <td>${fmt(s.composite_score, 1)}</td>
+    <td>${s.total_trades}</td>
+    <td>${fmt(s.win_rate * 100, 1)}</td>
+    <td class="${pnlClass(s.total_pnl)}">${fmt(s.total_pnl, 4)}</td>
+    <td>${fmt(s.profit_factor, 2)}</td>
+    <td>${fmt(s.expectancy, 4)}</td>
+  </tr>`).join('');
+}
+
+async function poll() {
+  await Promise.all([updateStats(), updateRisk(), updatePositions()]);
+  document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+}
+
+// 스코어는 덜 자주
+async function pollScores() { await updateScores(); }
+
+poll();
+pollScores();
+setInterval(poll, POLL_MS);
+setInterval(pollScores, 30000);
+</script>
+</body>
+</html>

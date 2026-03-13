@@ -1,0 +1,21 @@
+[Unit]
+Description=TradingView Webhook Trading Server
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/tv-webhook-trader
+ExecStart=/opt/tv-webhook-trader/build/tv_webhook_trader config/config.json
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+Environment=LD_LIBRARY_PATH=/usr/local/lib
+
+# 로깅
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tv-webhook-trader
+
+[Install]
+WantedBy=multi-user.target

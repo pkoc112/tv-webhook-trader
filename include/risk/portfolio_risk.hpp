@@ -1,0 +1,352 @@
+// ============================================================================
+// risk/portfolio_risk.hpp -- 포트폴리오 레벨 리스크 관리
+// v1.0 | 2026-03-13 | Python sfx-trader risk/portfolio_risk.py 포팅
+//
+// 서킷 브레이커, TF별 포지션 제한, 노출 배분, 상관관계, 마진 체크
+// ============================================================================
+#pragma once
+
+#include <string>
+#include <unordered_map>
+#include <mutex>
+#include <cmath>
+#include <chrono>
+
+#include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
+
+namespace hft {
+
+// -- 포지션 정보 (포트폴리오 관리용) --
+struct ManagedPosition {
+    std::string symbol;
+    std::string timeframe;
+    std::string side;
+    double entry_price{0.0};
+    double quantity{0.0};
+    int    leverage{10};
+    double sl_price{0.0};
+    double tp1_price{0.0};
+    std::string tier;
+    std::chrono::system_clock::time_point opened_at;
+};
+
+struct RiskDecision {
+    bool allowed{true};
+    std::string reason;
+    std::string check_failed;
+};
+
+inline void to_json(nlohmann::json& j, const RiskDecision& d) {
+    j = nlohmann::json{
+        {"allowed", d.allowed}, {"reason", d.reason},
+        {"check_failed", d.check_failed}
+    };
+}
+
+struct PortfolioState {
+    int    total_positions{0};
+    double total_notional{0.0};
+    double total_margin_used{0.0};
+    double margin_used_pct{0.0};
+    std::unordered_map<std::string, int>    positions_by_tf;
+    std::unordered_map<std::string, double> exposure_by_tf;
+    double correlated_risk{0.0};
+    double correlated_risk_pct{0.0};
+    double daily_pnl{0.0};
+    double weekly_pnl{0.0};
+    double current_drawdown_pct{0.0};
+    bool   circuit_breaker_active{false};
+};
+
+inline void to_json(nlohmann::json& j, const PortfolioState& s) {
+    j = nlohmann::json{
+        {"total_positions", s.total_positions},
+        {"total_notional", s.total_notional},
+        {"total_margin_used", s.total_margin_used},
+        {"margin_used_pct", s.margin_used_pct},
+        {"positions_by_tf", s.positions_by_tf},
+        {"exposure_by_tf", s.exposure_by_tf},
+        {"correlated_risk", s.correlated_risk},
+        {"correlated_risk_pct", s.correlated_risk_pct},
+        {"daily_pnl", s.daily_pnl},
+        {"weekly_pnl", s.weekly_pnl},
+        {"current_drawdown_pct", s.current_drawdown_pct},
+        {"circuit_breaker_active", s.circuit_breaker_active}
+    };
+}
+
+
+class PortfolioRiskManager {
+public:
+    explicit PortfolioRiskManager(const nlohmann::json& config) {
+        auto cfg = config.value("portfolio_risk", nlohmann::json::object());
+        m_max_pos_total = cfg.value("max_positions_total", 50);
+
+        if (cfg.contains("max_positions_per_tf")) {
+            for (auto& [k, v] : cfg["max_positions_per_tf"].items())
+                m_max_pos_per_tf[k] = v.get<int>();
+        }
+        if (cfg.contains("tf_exposure_pct")) {
+            for (auto& [k, v] : cfg["tf_exposure_pct"].items())
+                m_tf_exposure_pct[k] = v.get<double>();
+        }
+
+        m_corr_factor      = cfg.value("correlation_factor", 0.7);
+        m_max_corr_risk_pct = cfg.value("max_correlated_risk_pct", 50.0);
+
+        auto cb = cfg.value("circuit_breaker", nlohmann::json::object());
+        m_cb_daily_loss_pct  = cb.value("daily_loss_pct", 5.0);
+        m_cb_weekly_loss_pct = cb.value("weekly_loss_pct", 10.0);
+        m_cb_cooldown_min    = cb.value("cooldown_minutes", 60);
+    }
+
+    // ── Public API ──
+
+    void update_balance(double balance) {
+        std::lock_guard lock(m_mtx);
+        m_initial_balance = balance;
+    }
+
+    void on_trade_closed(double pnl) {
+        std::lock_guard lock(m_mtx);
+        check_daily_reset_locked();
+        m_daily_pnl += pnl;
+        m_weekly_pnl += pnl;
+
+        double daily_limit = m_initial_balance * (m_cb_daily_loss_pct / 100.0);
+        if (m_daily_pnl < -daily_limit) {
+            activate_circuit_breaker_locked("daily_loss");
+        }
+        double weekly_limit = m_initial_balance * (m_cb_weekly_loss_pct / 100.0);
+        if (m_weekly_pnl < -weekly_limit) {
+            activate_circuit_breaker_locked("weekly_loss");
+        }
+    }
+
+    [[nodiscard]] RiskDecision check_entry(
+        const std::string& symbol, const std::string& timeframe,
+        double price, double qty, int leverage,
+        double balance,
+        const std::unordered_map<std::string, ManagedPosition>& positions)
+    {
+        std::lock_guard lock(m_mtx);
+        m_checks_total++;
+        check_daily_reset_locked();
+
+        // 1. 서킷 브레이커
+        if (m_cb_active) {
+            if (!check_cb_cooldown_locked()) {
+                return block("circuit_breaker",
+                    "Circuit breaker active (daily PnL: " + fmt2(m_daily_pnl) + ")");
+            }
+        }
+
+        // 2. 총 포지션 수
+        int total_pos = static_cast<int>(positions.size());
+        if (total_pos >= m_max_pos_total) {
+            return block("max_positions",
+                "Max positions: " + std::to_string(total_pos) + "/" + std::to_string(m_max_pos_total));
+        }
+
+        // 3. TF별 포지션 제한
+        std::string tf = timeframe.empty() ? "unknown" : timeframe;
+        int tf_count = 0;
+        for (auto& [_, p] : positions) {
+            if (p.timeframe == tf) tf_count++;
+        }
+        int tf_limit = 10;
+        auto it = m_max_pos_per_tf.find(tf);
+        if (it != m_max_pos_per_tf.end()) tf_limit = it->second;
+
+        if (tf_count >= tf_limit) {
+            return block("tf_position_limit",
+                "TF " + tf + "m limit: " + std::to_string(tf_count) + "/" + std::to_string(tf_limit));
+        }
+
+        // 4. TF별 노출 배분
+        double tf_exposure = 0.0;
+        for (auto& [_, p] : positions) {
+            if (p.timeframe == tf)
+                tf_exposure += std::abs(p.entry_price * p.quantity * p.leverage);
+        }
+        double new_notional = price * qty * leverage;
+        double tf_exp_pct = 30.0;
+        auto eit = m_tf_exposure_pct.find(tf);
+        if (eit != m_tf_exposure_pct.end()) tf_exp_pct = eit->second;
+        double tf_max = balance * (tf_exp_pct / 100.0) * leverage;
+
+        if (tf_exposure + new_notional > tf_max) {
+            return block("tf_exposure",
+                "TF " + tf + "m exposure: " + fmt0(tf_exposure + new_notional) + "/" + fmt0(tf_max));
+        }
+
+        // 5. 상관관계 리스크
+        double total_notional = 0.0;
+        for (auto& [_, p] : positions) {
+            total_notional += std::abs(p.entry_price * p.quantity * p.leverage);
+        }
+        double corr_risk = (total_notional + new_notional) * m_corr_factor;
+        double corr_limit = balance * (m_max_corr_risk_pct / 100.0) * leverage;
+        if (corr_risk > corr_limit) {
+            return block("correlation_risk",
+                "Correlated risk: " + fmt0(corr_risk) + "/" + fmt0(corr_limit));
+        }
+
+        // 6. 마진 체크
+        double margin_needed = price * qty / leverage;
+        double total_margin = 0.0;
+        for (auto& [_, p] : positions) {
+            total_margin += std::abs(p.entry_price * p.quantity) / p.leverage;
+        }
+        if (total_margin + margin_needed > balance * 0.90) {
+            return block("margin_limit",
+                "Margin 90%: " + fmt2(total_margin + margin_needed) + "/" + fmt2(balance * 0.90));
+        }
+
+        m_checks_passed++;
+        return {true, "", ""};
+    }
+
+    [[nodiscard]] PortfolioState get_state(
+        double balance,
+        const std::unordered_map<std::string, ManagedPosition>& positions,
+        double peak_balance = 0) const
+    {
+        std::lock_guard lock(m_mtx);
+
+        PortfolioState state;
+        state.total_positions = static_cast<int>(positions.size());
+
+        for (auto& [_, p] : positions) {
+            double notional = std::abs(p.entry_price * p.quantity * p.leverage);
+            double margin = std::abs(p.entry_price * p.quantity) / p.leverage;
+            state.total_notional += notional;
+            state.total_margin_used += margin;
+
+            std::string tf = p.timeframe.empty() ? "unknown" : p.timeframe;
+            state.positions_by_tf[tf]++;
+            state.exposure_by_tf[tf] += notional;
+        }
+
+        state.margin_used_pct = balance > 0
+            ? std::round(state.total_margin_used / balance * 1000.0) / 10.0 : 0;
+        state.correlated_risk = state.total_notional * m_corr_factor;
+        state.correlated_risk_pct = balance > 0
+            ? std::round(state.correlated_risk / balance * 1000.0) / 10.0 : 0;
+
+        double dd = 0.0;
+        if (peak_balance > 0) dd = (peak_balance - balance) / peak_balance * 100.0;
+
+        state.daily_pnl = std::round(m_daily_pnl * 10000.0) / 10000.0;
+        state.weekly_pnl = std::round(m_weekly_pnl * 10000.0) / 10000.0;
+        state.current_drawdown_pct = std::round(dd * 100.0) / 100.0;
+        state.circuit_breaker_active = m_cb_active;
+
+        // Round exposure values
+        for (auto& [k, v] : state.exposure_by_tf) {
+            v = std::round(v * 100.0) / 100.0;
+        }
+        state.total_notional = std::round(state.total_notional * 100.0) / 100.0;
+        state.total_margin_used = std::round(state.total_margin_used * 100.0) / 100.0;
+
+        return state;
+    }
+
+    [[nodiscard]] nlohmann::json get_check_stats() const {
+        std::lock_guard lock(m_mtx);
+        double pass_rate = m_checks_total > 0
+            ? std::round(static_cast<double>(m_checks_passed) / m_checks_total * 1000.0) / 10.0 : 0;
+        return nlohmann::json{
+            {"total_checks", m_checks_total},
+            {"passed", m_checks_passed},
+            {"blocked", m_checks_blocked},
+            {"pass_rate", pass_rate},
+            {"block_reasons", m_block_reasons}
+        };
+    }
+
+private:
+    RiskDecision block(const std::string& check, const std::string& reason) {
+        m_checks_blocked++;
+        m_block_reasons[check] = m_block_reasons.value(check, 0) + 1;
+        return {false, reason, check};
+    }
+
+    void activate_circuit_breaker_locked(const std::string& trigger) {
+        if (!m_cb_active) {
+            m_cb_active = true;
+            m_cb_activated_at = std::chrono::steady_clock::now();
+            spdlog::error("[RISK] CIRCUIT BREAKER! trigger={} daily={:.2f} weekly={:.2f}",
+                trigger, m_daily_pnl, m_weekly_pnl);
+        }
+    }
+
+    bool check_cb_cooldown_locked() {
+        auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(
+            std::chrono::steady_clock::now() - m_cb_activated_at).count();
+        if (elapsed >= m_cb_cooldown_min) {
+            m_cb_active = false;
+            spdlog::info("[RISK] Circuit breaker released ({}min cooldown)", m_cb_cooldown_min);
+            return true;
+        }
+        return false;
+    }
+
+    void check_daily_reset_locked() {
+        auto now = std::chrono::system_clock::now();
+        auto now_t = std::chrono::system_clock::to_time_t(now);
+        std::tm tm{};
+#ifdef _WIN32
+        gmtime_s(&tm, &now_t);
+#else
+        gmtime_r(&now_t, &tm);
+#endif
+        // 간단 일일 리셋: 날짜 변경 감지
+        int today = tm.tm_yday;
+        if (today != m_last_day) {
+            m_daily_pnl = 0.0;
+            m_last_day = today;
+            // 월요일(wday==1)이면 주간 리셋
+            if (tm.tm_wday == 1 && today != m_last_week_day) {
+                m_weekly_pnl = 0.0;
+                m_last_week_day = today;
+            }
+        }
+    }
+
+    static std::string fmt0(double v) {
+        char buf[32]; std::snprintf(buf, sizeof(buf), "%.0f", v); return buf;
+    }
+    static std::string fmt2(double v) {
+        char buf[32]; std::snprintf(buf, sizeof(buf), "%.2f", v); return buf;
+    }
+
+    // State
+    mutable std::mutex m_mtx;
+    double m_daily_pnl{0.0};
+    double m_weekly_pnl{0.0};
+    double m_initial_balance{1000.0};
+    bool   m_cb_active{false};
+    std::chrono::steady_clock::time_point m_cb_activated_at;
+    int    m_last_day{-1};
+    int    m_last_week_day{-1};
+
+    // Stats
+    int m_checks_total{0};
+    int m_checks_passed{0};
+    int m_checks_blocked{0};
+    nlohmann::json m_block_reasons = nlohmann::json::object();
+
+    // Config
+    int    m_max_pos_total{50};
+    std::unordered_map<std::string, int>    m_max_pos_per_tf;
+    std::unordered_map<std::string, double> m_tf_exposure_pct;
+    double m_corr_factor{0.7};
+    double m_max_corr_risk_pct{50.0};
+    double m_cb_daily_loss_pct{5.0};
+    double m_cb_weekly_loss_pct{10.0};
+    int    m_cb_cooldown_min{60};
+};
+
+} // namespace hft

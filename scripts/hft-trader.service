@@ -1,0 +1,20 @@
+[Unit]
+Description=C++ HFT Webhook Trader
+After=network.target
+
+[Service]
+Type=simple
+User=trader
+Group=trader
+WorkingDirectory=/home/trader/tv-webhook-trader
+ExecStart=/home/trader/tv-webhook-trader/build/tv_webhook_trader config/config.json config/risk_config.json
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+# Logging
+StandardOutput=append:/home/trader/tv-webhook-trader/logs/stdout.log
+StandardError=append:/home/trader/tv-webhook-trader/logs/stderr.log
+
+[Install]
+WantedBy=multi-user.target
