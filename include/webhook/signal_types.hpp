@@ -79,9 +79,26 @@ struct WebhookSignal {
 
     // -- JSON 파싱 --
     static std::optional<WebhookSignal> from_json(const std::string& body) {
-        auto j = json::parse(body, nullptr, false);
+        // TradingView Custom JSON에서 이중 따옴표 문제 수정
+        std::string sanitized = body;
+        // ""key"" → "key" 패턴 수정 (연속된 "" 를 " 로 치환)
+        std::string::size_type pos = 0;
+        while ((pos = sanitized.find("\"\"", pos)) != std::string::npos) {
+            // JSON 문자열 내부의 빈 문자열("")은 보존하기 위해
+            // 앞뒤 문맥 확인: 콜론/콤마/중괄호 뒤의 ""는 빈 문자열이므로 skip
+            if (pos > 0) {
+                char prev = sanitized[pos - 1];
+                if (prev == ':' || prev == ',' || prev == '{' || prev == '[') {
+                    pos += 2;
+                    continue;
+                }
+            }
+            sanitized.erase(pos, 1);
+        }
+
+        auto j = json::parse(sanitized, nullptr, false);
         if (j.is_discarded()) {
-            spdlog::warn("[Signal] JSON parse failed: {}", body.substr(0, 100));
+            spdlog::warn("[Signal] JSON parse failed: {}", body.substr(0, 200));
             return std::nullopt;
         }
 
