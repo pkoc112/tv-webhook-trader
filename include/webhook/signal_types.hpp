@@ -80,21 +80,36 @@ struct WebhookSignal {
     // -- JSON 파싱 --
     static std::optional<WebhookSignal> from_json(const std::string& body) {
         // TradingView Custom JSON에서 이중 따옴표 문제 수정
+        // TradingView는 Custom JSON 필드의 키/값을 병합할 때
+        // ""token"" 형태로 이중 따옴표를 생성함
         std::string sanitized = body;
-        // ""key"" → "key" 패턴 수정 (연속된 "" 를 " 로 치환)
         std::string::size_type pos = 0;
         while ((pos = sanitized.find("\"\"", pos)) != std::string::npos) {
-            // JSON 문자열 내부의 빈 문자열("")은 보존하기 위해
-            // 앞뒤 문맥 확인: 콜론/콤마/중괄호 뒤의 ""는 빈 문자열이므로 skip
-            if (pos > 0) {
-                char prev = sanitized[pos - 1];
-                if (prev == ':' || prev == ',' || prev == '{' || prev == '[') {
-                    pos += 2;
-                    continue;
+            bool should_remove = false;
+
+            // "" 뒤에 알파벳/숫자/_ → 이중 인코딩된 키 시작 (""token → "token)
+            if (pos + 2 < sanitized.size()) {
+                char next = sanitized[pos + 2];
+                if (std::isalnum(static_cast<unsigned char>(next)) || next == '_') {
+                    should_remove = true;
                 }
             }
-            sanitized.erase(pos, 1);
+
+            // "" 앞에 알파벳/숫자/_ → 이중 인코딩된 키 끝 (token"" → token")
+            if (!should_remove && pos > 0) {
+                char prev = sanitized[pos - 1];
+                if (std::isalnum(static_cast<unsigned char>(prev)) || prev == '_') {
+                    should_remove = true;
+                }
+            }
+
+            if (should_remove) {
+                sanitized.erase(pos, 1);
+            } else {
+                pos += 2; // 정상 빈 문자열 "" 보존
+            }
         }
+        spdlog::debug("[Signal] Sanitized body: {}", sanitized.substr(0, 300));
 
         auto j = json::parse(sanitized, nullptr, false);
         if (j.is_discarded()) {
