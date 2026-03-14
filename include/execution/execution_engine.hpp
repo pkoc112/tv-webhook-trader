@@ -371,6 +371,13 @@ private:
             sz.usdt_amount *= tf_it->second.size_multiplier;
         }
 
+        // 거래소 최소 주문금액 보장 (Bitget 5 USDT)
+        constexpr double MIN_NOTIONAL_USDT = 5.5;  // 5 USDT + 마진
+        if (sig.price > 0 && sz.usdt_amount < MIN_NOTIONAL_USDT) {
+            sz.qty = MIN_NOTIONAL_USDT / sig.price;
+            sz.usdt_amount = MIN_NOTIONAL_USDT;
+        }
+
         sig.size = sz.qty;
         leverage = sz.leverage;
 
