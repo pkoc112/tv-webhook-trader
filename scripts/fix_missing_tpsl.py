@@ -48,8 +48,15 @@ def api_call(method, path, body=''):
     url = f'https://api.bitget.com{path}'
     data = body.encode() if body else None
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, context=ctx) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, context=ctx) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode('utf-8', errors='replace')
+        try:
+            return json.loads(body_text)
+        except:
+            raise Exception(f"HTTP {e.code}: {body_text[:200]}")
 
 def api_get(path):
     return api_call('GET', path)
