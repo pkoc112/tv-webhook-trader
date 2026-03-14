@@ -22,6 +22,8 @@
 #include <string>
 #include <optional>
 #include <mutex>
+#include <unordered_map>
+#include <cmath>
 
 #include "core/types.hpp"
 #include "exchange/bitget_auth.hpp"
@@ -55,15 +57,34 @@ public:
 
     // -- 선물 주문 실행 --
     OrderResponse place_futures_order(const OrderRequest& req) {
+        // qty를 심볼의 sizeMultiplier에 맞게 반올림
+        std::string sym_str = req.symbol.str();
+        double rounded_qty = round_qty(sym_str, req.quantity);
+        double min_qty = get_min_qty(sym_str);
+
+        // 반올림 후 최소 수량 미달 시 최소 수량으로 설정
+        if (rounded_qty < min_qty) {
+            rounded_qty = min_qty;
+        }
+
+        // sizeMultiplier 정밀도에 맞춘 문자열 생성
+        auto it = m_contracts.find(sym_str);
+        double step = (it != m_contracts.end()) ? it->second.size_multiplier : 0.001;
+        int decimals = 0;
+        double s = step;
+        while (s < 1.0 && decimals < 10) { s *= 10; ++decimals; }
+        char qty_buf[32];
+        std::snprintf(qty_buf, sizeof(qty_buf), "%.*f", decimals, rounded_qty);
+
         json body;
-        body["symbol"]      = req.symbol.str();
+        body["symbol"]      = sym_str;
         body["productType"] = "USDT-FUTURES";
         body["marginMode"]  = "crossed";
         body["marginCoin"]  = "USDT";
         body["side"]        = (req.side == Side::Buy) ? "buy" : "sell";
         body["tradeSide"]   = (req.trade_side == TradeSide::Open) ? "open" : "close";
         body["orderType"]   = (req.order_type == OrderType::Market) ? "market" : "limit";
-        body["size"]        = std::to_string(req.quantity);
+        body["size"]        = std::string(qty_buf);
         body["clientOid"]   = std::to_string(req.client_order_id);
 
         if (req.order_type == OrderType::Limit) {
@@ -76,9 +97,9 @@ public:
         auto body_str = body.dump();
         const std::string path = "/api/v2/mix/order/place-order";
 
-        spdlog::info("[REST] Placing order: {} {} {} size={} oid={}",
+        spdlog::info("[REST] Placing order: {} {} {} size={} (raw={:.8f}) oid={}",
             body["side"].get<std::string>(), body["tradeSide"].get<std::string>(),
-            req.symbol.str(), req.quantity, req.client_order_id);
+            sym_str, qty_buf, req.quantity, req.client_order_id);
 
         auto resp_str = do_request("POST", path, body_str);
         return parse_order_response(resp_str, req.client_order_id);
@@ -168,6 +189,70 @@ public:
         auto resp = do_request("GET", path, "");
         try { return json::parse(resp); }
         catch (...) { return json{}; }
+    }
+
+    // -- 심볼별 계약 정보 캐시 (sizeMultiplier) --
+    struct ContractInfo {
+        double size_multiplier{0.001};  // 최소 수량 단위
+        double min_trade_num{0.001};    // 최소 주문 수량
+    };
+
+    // 외부에서 사전 로드된 계약 정보 주입
+    void set_contracts(const std::unordered_map<std::string, ContractInfo>& contracts) {
+        m_contracts = contracts;
+    }
+
+    // 캐시된 계약 정보 반환
+    const std::unordered_map<std::string, ContractInfo>& get_contracts_cache() const {
+        return m_contracts;
+    }
+
+    void fetch_contracts() {
+        const std::string path = "/api/v2/mix/market/contracts?productType=USDT-FUTURES";
+        auto resp_str = do_request("GET", path, "");
+        try {
+            auto j = json::parse(resp_str);
+            if (j.value("code", "") != "00000") {
+                spdlog::error("[REST] fetch_contracts failed: {}", j.value("msg", "unknown"));
+                return;
+            }
+            auto& data = j["data"];
+            int count = 0;
+            for (auto& c : data) {
+                std::string sym = c.value("symbol", "");
+                if (sym.empty()) continue;
+                ContractInfo ci;
+                ci.size_multiplier = std::stod(c.value("sizeMultiplier", "0.001"));
+                ci.min_trade_num = std::stod(c.value("minTradeNum", "0.001"));
+                m_contracts[sym] = ci;
+                ++count;
+            }
+            spdlog::info("[REST] Loaded {} contract infos (sizeMultiplier)", count);
+        } catch (const std::exception& e) {
+            spdlog::error("[REST] fetch_contracts parse error: {}", e.what());
+        }
+    }
+
+    // qty를 심볼의 sizeMultiplier에 맞게 반올림
+    double round_qty(const std::string& symbol, double qty) const {
+        auto it = m_contracts.find(symbol);
+        double step = 0.001;  // 기본값
+        if (it != m_contracts.end()) {
+            step = it->second.size_multiplier;
+        }
+        if (step <= 0) step = 0.001;
+        // 내림으로 반올림 (거래소 최소 단위에 맞춤)
+        double rounded = std::floor(qty / step) * step;
+        return rounded;
+    }
+
+    // qty가 최소 주문 수량 이상인지 확인
+    double get_min_qty(const std::string& symbol) const {
+        auto it = m_contracts.find(symbol);
+        if (it != m_contracts.end()) {
+            return it->second.min_trade_num;
+        }
+        return 0.001;
     }
 
     void disconnect() {
@@ -301,6 +386,9 @@ private:
     std::mutex m_conn_mtx;
     std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> m_stream;
     bool m_connected{false};
+
+    // 심볼별 계약 정보 캐시
+    std::unordered_map<std::string, ContractInfo> m_contracts;
 };
 
 } // namespace hft

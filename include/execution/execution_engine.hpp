@@ -193,25 +193,32 @@ public:
 
 private:
     void init_leverage() {
-        if (m_trading.symbol_leverages.empty() && m_trading.allowed_symbols.empty()) return;
         net::io_context ioc;
         BitgetRestClient rest(ioc, m_auth, m_rest_config);
-        for (auto& [symbol, lev] : m_trading.symbol_leverages) {
-            m_order_limiter.acquire();
-            rest.set_leverage(symbol, lev);
-        }
-        for (auto& symbol : m_trading.allowed_symbols) {
-            if (m_trading.symbol_leverages.count(symbol)) continue;
-            m_order_limiter.acquire();
-            rest.set_leverage(symbol, m_trading.default_leverage);
+
+        // 심볼별 계약 정보 (sizeMultiplier) 로드
+        rest.fetch_contracts();
+        m_contracts = rest.get_contracts_cache();
+
+        if (!m_trading.symbol_leverages.empty() || !m_trading.allowed_symbols.empty()) {
+            for (auto& [symbol, lev] : m_trading.symbol_leverages) {
+                m_order_limiter.acquire();
+                rest.set_leverage(symbol, lev);
+            }
+            for (auto& symbol : m_trading.allowed_symbols) {
+                if (m_trading.symbol_leverages.count(symbol)) continue;
+                m_order_limiter.acquire();
+                rest.set_leverage(symbol, m_trading.default_leverage);
+            }
         }
         rest.disconnect();
-        spdlog::info("[Exec] Leverage init complete");
+        spdlog::info("[Exec] Leverage init complete, {} contracts loaded", m_contracts.size());
     }
 
     void worker_loop(int wid) {
         net::io_context ioc;
         BitgetRestClient rest(ioc, m_auth, m_rest_config);
+        rest.set_contracts(m_contracts);
         spdlog::info("[Worker-{}] Started", wid);
 
         while (m_running.load(std::memory_order_relaxed)) {
@@ -474,6 +481,7 @@ private:
     SPSCQueue<WebhookSignal>& m_signal_queue;
     BitgetAuth m_auth;
     BitgetRestConfig m_rest_config;
+    std::unordered_map<std::string, BitgetRestClient::ContractInfo> m_contracts;
     RiskManager& m_risk;
     SymbolScorer& m_scorer;
     FeeAnalyzer& m_fee;
