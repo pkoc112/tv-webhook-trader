@@ -17,7 +17,6 @@
 #include <optional>
 #include <cmath>
 #include <functional>
-#include <regex>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 #include "core/types.hpp"
@@ -90,28 +89,17 @@ struct WebhookSignal {
         }
 
         // 2차 시도: TradingView Custom JSON 이중 따옴표 수정
-        // TradingView는 Custom JSON 필드를 병합할 때 ""key"": ""value"" 패턴 생성
-        // 전략: regex로 ""내용"" → "내용" 패턴 치환 (빈 문자열 "" 보존)
-        std::string sanitized = body;
-
-        // ""word"" 패턴을 "word"로 변환 (키와 값 모두 처리)
-        // 빈 문자열 ""는 [^"]+ 조건에 의해 보존됨
-        try {
-            static const std::regex dq_re(R"_re_(""{1,}([^"]+)"{1,})_re_");
-            sanitized = std::regex_replace(sanitized, dq_re, "\"$1\"");
-        } catch (...) {
-            // regex 실패 시 fallback: 수동 치환
-            std::string::size_type pos = 0;
-            while ((pos = sanitized.find("\"\"", pos)) != std::string::npos) {
-                // "" 뒤에 알파벳/숫자/_ 가 오면 이중 인코딩
-                if (pos + 2 < sanitized.size()) {
-                    char next = sanitized[pos + 2];
-                    if (std::isalnum(static_cast<unsigned char>(next)) || next == '_') {
-                        sanitized.erase(pos, 1);
-                        continue;
-                    }
+        // 전략: 모든 연속 따옴표("")를 단일 따옴표(")로 축소
+        // TradingView SFX 페이로드에는 빈 문자열 값이 없으므로 안전함
+        std::string sanitized;
+        sanitized.reserve(body.size());
+        for (size_t i = 0; i < body.size(); ++i) {
+            sanitized += body[i];
+            // 연속된 " 를 하나로 축소
+            if (body[i] == '"') {
+                while (i + 1 < body.size() && body[i + 1] == '"') {
+                    ++i; // 추가 " 건너뜀
                 }
-                pos += 2;
             }
         }
 
