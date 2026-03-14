@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bitget 실제 상태 검증 스크립트 — 포지션, TP/SL, 주문, 고아 포지션 체크"""
+"""Bitget 실제 상태 검증 스크립트 — 포지션, TP/SL(preset+trigger), 주문, 고아 포지션 체크"""
 import hmac, hashlib, base64, time, json, urllib.request, ssl, os
 
 # Load config
@@ -11,9 +11,7 @@ with open(cfg_path) as f:
 if 'api_key' in cfg:
     ak, sk, pp = cfg['api_key'], cfg['api_secret'], cfg.get('api_passphrase', cfg.get('passphrase',''))
 elif 'api_keys_path' in cfg:
-    keys_path = os.path.join(os.path.dirname(cfg_path), '..', cfg['api_keys_path'])
-    if not os.path.isabs(cfg['api_keys_path']):
-        keys_path = os.path.join(os.path.dirname(cfg_path), cfg['api_keys_path'].replace('config/',''))
+    keys_path = os.path.join(os.path.dirname(cfg_path), cfg['api_keys_path'].replace('config/',''))
     with open(keys_path) as f2:
         keys = json.load(f2)
     ak, sk, pp = keys['api_key'], keys['api_secret'], keys.get('passphrase', keys.get('api_passphrase',''))
@@ -37,6 +35,7 @@ def api_get(path):
     with urllib.request.urlopen(req, context=ctx) as resp:
         return json.loads(resp.read())
 
+# ============================================================
 print("=" * 60)
 print("1. ACCOUNT BALANCE")
 print("=" * 60)
@@ -51,77 +50,133 @@ try:
 except Exception as e:
     print(f"   ERROR: {e}")
 
+# ============================================================
 print("\n" + "=" * 60)
 print("2. OPEN POSITIONS (Bitget actual)")
 print("=" * 60)
+positions = []
 try:
     pos = api_get('/api/v2/mix/position/all-position?productType=USDT-FUTURES&marginCoin=USDT')
     if pos.get('code') == '00000':
         positions = pos['data']
         print(f"   Total positions: {len(positions)}")
 
-        no_tp = []
-        no_sl = []
-        with_tp = 0
-        with_sl = 0
         total_margin = 0
         total_upnl = 0
-
         for p in positions:
-            sym = p.get('symbol','?').replace('USDT','')
-            side = p.get('holdSide','?')
             margin = float(p.get('margin','0') or '0')
             upnl = float(p.get('unrealizedPL','0') or '0')
             total_margin += margin
             total_upnl += upnl
 
-            # TP/SL check via position fields
-            tp = p.get('presetStopSurplusPrice','') or ''
-            sl = p.get('presetStopLossPrice','') or ''
-
-            if tp and float(tp) > 0:
-                with_tp += 1
-            else:
-                no_tp.append(f"{sym}({side[0]})")
-            if sl and float(sl) > 0:
-                with_sl += 1
-            else:
-                no_sl.append(f"{sym}({side[0]})")
-
         print(f"   Total Margin: ${total_margin:.2f}")
         print(f"   Total uPnL:   ${total_upnl:.4f}")
-        print(f"   With TP: {with_tp}/{len(positions)}")
-        print(f"   With SL: {with_sl}/{len(positions)}")
-        if no_tp:
-            print(f"   !! NO TP ({len(no_tp)}): {', '.join(no_tp[:15])}{'...' if len(no_tp)>15 else ''}")
-        if no_sl:
-            print(f"   !! NO SL ({len(no_sl)}): {', '.join(no_sl[:15])}{'...' if len(no_sl)>15 else ''}")
 except Exception as e:
     print(f"   ERROR: {e}")
 
+# ============================================================
 print("\n" + "=" * 60)
-print("3. PENDING TRIGGER ORDERS (TP/SL orders)")
+print("3. PENDING TRIGGER ORDERS (TP/SL)")
+print("=" * 60)
+all_trigger_orders = []
+try:
+    last_end_id = ''
+    page = 0
+    while True:
+        page += 1
+        path = '/api/v2/mix/order/orders-plan-pending?productType=USDT-FUTURES&limit=100'
+        if last_end_id:
+            path += f'&idLessThan={last_end_id}'
+        resp = api_get(path)
+        if resp.get('code') != '00000':
+            print(f"   Trigger orders error (page {page}): {resp.get('msg','?')}")
+            break
+        data = resp.get('data', {})
+        ords = data.get('entrustedList', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+        if not ords:
+            break
+        all_trigger_orders.extend(ords)
+        last_end_id = data.get('endId', '') if isinstance(data, dict) else ''
+        if not last_end_id or len(ords) < 100:
+            break
+        time.sleep(0.15)
+
+    print(f"   Total pending trigger orders: {len(all_trigger_orders)}")
+    plan_types = {}
+    for o in all_trigger_orders:
+        pt = o.get('planType', 'unknown')
+        plan_types[pt] = plan_types.get(pt, 0) + 1
+    for pt, cnt in sorted(plan_types.items()):
+        print(f"   - {pt}: {cnt}")
+except Exception as e:
+    print(f"   ERROR: {e}")
+
+# ============================================================
+print("\n" + "=" * 60)
+print("4. TP/SL PROTECTION CHECK (preset + trigger orders)")
 print("=" * 60)
 try:
-    orders = api_get('/api/v2/mix/order/orders-plan-pending?productType=USDT-FUTURES')
-    if orders.get('code') == '00000':
-        data = orders.get('data', {})
-        ords = data.get('entrustedList', []) if isinstance(data, dict) else data
-        if isinstance(ords, list):
-            print(f"   Total pending trigger orders: {len(ords)}")
-            plan_types = {}
-            for o in ords:
-                pt = o.get('planType','unknown')
-                plan_types[pt] = plan_types.get(pt, 0) + 1
-            for pt, cnt in sorted(plan_types.items()):
-                print(f"   - {pt}: {cnt}")
+    # Build trigger order map
+    trigger_map = {}  # "BTCUSDT_long" → {"tp": bool, "sl": bool}
+    for o in all_trigger_orders:
+        sym = o.get('symbol', '')
+        hold = o.get('holdSide', '')
+        pt = o.get('planType', '')
+        key = f"{sym}_{hold}"
+        if key not in trigger_map:
+            trigger_map[key] = {'tp': False, 'sl': False}
+        if pt in ('profit_plan', 'pos_profit'):
+            trigger_map[key]['tp'] = True
+        elif pt in ('loss_plan', 'pos_loss'):
+            trigger_map[key]['sl'] = True
+
+    no_tp = []
+    no_sl = []
+    with_tp = 0
+    with_sl = 0
+
+    for p in positions:
+        sym = p.get('symbol', '?')
+        hold = p.get('holdSide', '?')
+        short_sym = sym.replace('USDT', '')
+        key = f"{sym}_{hold}"
+
+        # Check preset fields
+        preset_tp = p.get('presetStopSurplusPrice', '') or ''
+        preset_sl = p.get('presetStopLossPrice', '') or ''
+        has_preset_tp = bool(preset_tp and float(preset_tp) > 0)
+        has_preset_sl = bool(preset_sl and float(preset_sl) > 0)
+
+        # Check trigger orders
+        trig = trigger_map.get(key, {'tp': False, 'sl': False})
+
+        has_tp = has_preset_tp or trig['tp']
+        has_sl = has_preset_sl or trig['sl']
+
+        if has_tp:
+            with_tp += 1
         else:
-            print(f"   Data format: {type(data)}")
+            no_tp.append(f"{short_sym}({hold[0]})")
+
+        if has_sl:
+            with_sl += 1
+        else:
+            no_sl.append(f"{short_sym}({hold[0]})")
+
+    print(f"   With TP: {with_tp}/{len(positions)}")
+    print(f"   With SL: {with_sl}/{len(positions)}")
+    if no_tp:
+        print(f"   !! NO TP ({len(no_tp)}): {', '.join(no_tp[:20])}{'...' if len(no_tp)>20 else ''}")
+    if no_sl:
+        print(f"   !! NO SL ({len(no_sl)}): {', '.join(no_sl[:20])}{'...' if len(no_sl)>20 else ''}")
+    if not no_tp and not no_sl:
+        print(f"   ✅ All positions protected!")
 except Exception as e:
     print(f"   ERROR: {e}")
 
+# ============================================================
 print("\n" + "=" * 60)
-print("4. RECENT FILLS (last 10)")
+print("5. RECENT FILLS (last 10)")
 print("=" * 60)
 try:
     fills = api_get('/api/v2/mix/order/fills?productType=USDT-FUTURES&limit=10')
@@ -136,14 +191,12 @@ try:
                 price = f.get('price','?')
                 fee = f.get('fee','?')
                 print(f"   {sym:12s} {side:5s} sz={sz:>12s} @{price:>12s} fee={fee}")
-        else:
-            print(f"   Data format: {type(data)}")
 except Exception as e:
     print(f"   ERROR: {e}")
 
-# 5. Compare with internal state
+# ============================================================
 print("\n" + "=" * 60)
-print("5. INTERNAL vs EXCHANGE COMPARISON")
+print("6. INTERNAL vs EXCHANGE COMPARISON")
 print("=" * 60)
 try:
     state_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'state.json')
@@ -154,25 +207,63 @@ try:
         print(f"   Internal positions: {len(internal_positions)}")
         print(f"   Exchange positions: {len(positions)}")
 
-        # Find orphans: in internal but not on exchange
+        # Exchange keys: "BTCUSDT_long", "ETHUSDT_short"
         exchange_keys = set()
         for p in positions:
-            sym = p.get('symbol','')
-            side = p.get('holdSide','')
+            sym = p.get('symbol', '')
+            side = p.get('holdSide', '')
             exchange_keys.add(f"{sym}_{side}")
 
+        # Check orphans (in internal but not on exchange)
         orphans = []
         for key, pos_data in internal_positions.items():
-            sym = pos_data.get('symbol','')
-            side = 'long' if pos_data.get('side','') == 'buy' else 'short'
-            ek = f"{sym}USDT_{side}"
+            sym = pos_data.get('symbol', '')
+            # Internal state may store "BTC" or "BTCUSDT"
+            if not sym.endswith('USDT'):
+                sym = sym + 'USDT'
+            side_raw = pos_data.get('side', '')
+            if side_raw in ('buy', 'long'):
+                hold = 'long'
+            elif side_raw in ('sell', 'short'):
+                hold = 'short'
+            else:
+                hold = side_raw
+            ek = f"{sym}_{hold}"
             if ek not in exchange_keys:
-                orphans.append(f"{sym}({side[0]})")
+                orphans.append(f"{sym.replace('USDT','')}({hold[0] if hold else '?'})")
+
+        # Check reverse orphans (on exchange but not in internal)
+        internal_keys = set()
+        for key, pos_data in internal_positions.items():
+            sym = pos_data.get('symbol', '')
+            if not sym.endswith('USDT'):
+                sym = sym + 'USDT'
+            side_raw = pos_data.get('side', '')
+            if side_raw in ('buy', 'long'):
+                hold = 'long'
+            elif side_raw in ('sell', 'short'):
+                hold = 'short'
+            else:
+                hold = side_raw
+            internal_keys.add(f"{sym}_{hold}")
+
+        reverse_orphans = []
+        for p in positions:
+            sym = p.get('symbol', '')
+            hold = p.get('holdSide', '')
+            ek = f"{sym}_{hold}"
+            if ek not in internal_keys:
+                reverse_orphans.append(f"{sym.replace('USDT','')}({hold[0]})")
 
         if orphans:
-            print(f"   !! ORPHANS in internal ({len(orphans)}): {', '.join(orphans[:15])}")
+            print(f"   !! GHOST in internal ({len(orphans)}): {', '.join(orphans[:15])}")
         else:
-            print(f"   OK - No orphan positions")
+            print(f"   ✓ No ghost positions in internal state")
+
+        if reverse_orphans:
+            print(f"   !! UNTRACKED on exchange ({len(reverse_orphans)}): {', '.join(reverse_orphans[:15])}")
+        else:
+            print(f"   ✓ All exchange positions tracked internally")
     else:
         print(f"   state.json not found at {state_path}")
 except Exception as e:
