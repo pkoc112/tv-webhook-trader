@@ -7,9 +7,18 @@ cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 with open(cfg_path) as f:
     cfg = json.load(f)
 
-ak = cfg['api_key']
-sk = cfg['api_secret']
-pp = cfg['api_passphrase']
+# API keys: either inline or in separate file
+if 'api_key' in cfg:
+    ak, sk, pp = cfg['api_key'], cfg['api_secret'], cfg.get('api_passphrase', cfg.get('passphrase',''))
+elif 'api_keys_path' in cfg:
+    keys_path = os.path.join(os.path.dirname(cfg_path), '..', cfg['api_keys_path'])
+    if not os.path.isabs(cfg['api_keys_path']):
+        keys_path = os.path.join(os.path.dirname(cfg_path), cfg['api_keys_path'].replace('config/',''))
+    with open(keys_path) as f2:
+        keys = json.load(f2)
+    ak, sk, pp = keys['api_key'], keys['api_secret'], keys.get('passphrase', keys.get('api_passphrase',''))
+else:
+    raise RuntimeError("No API keys found in config")
 
 def sign_req(method, path, body=''):
     ts = str(int(time.time() * 1000))
