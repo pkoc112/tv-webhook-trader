@@ -116,7 +116,8 @@ public:
     }
 
     // -- TP/SL 설정 (holdSide 수정 완료) --
-    void place_tpsl(const std::string& symbol, const std::string& plan_type,
+    // Returns true if placement succeeded (code "00000")
+    bool place_tpsl(const std::string& symbol, const std::string& plan_type,
                     double trigger_price, double size, const std::string& hold_side) {
         json body;
         body["symbol"]       = symbol;
@@ -141,10 +142,86 @@ public:
             auto code = j.value("code", "99999");
             if (code != "00000") {
                 spdlog::error("[REST] TPSL failed: code={} msg={}", code, j.value("msg", "unknown"));
+                return false;
             }
+            return true;
         } catch (...) {
             spdlog::error("[REST] TPSL response parse failed");
+            return false;
         }
+    }
+
+    // -- 긴급 포지션 청산 (시장가) --
+    // TP/SL 설정 실패 시 보호 없는 포지션을 즉시 청산
+    bool flash_close_position(const std::string& symbol, const std::string& hold_side) {
+        json body;
+        body["symbol"]      = symbol;
+        body["productType"] = "USDT-FUTURES";
+        body["holdSide"]    = hold_side;
+
+        auto body_str = body.dump();
+        const std::string path = "/api/v2/mix/order/close-positions";
+
+        spdlog::warn("[REST] EMERGENCY CLOSE: {} hold={}", symbol, hold_side);
+
+        auto resp = do_request("POST", path, body_str);
+        try {
+            auto j = json::parse(resp);
+            auto code = j.value("code", "99999");
+            if (code == "00000") {
+                spdlog::info("[REST] Emergency close succeeded: {}", symbol);
+                return true;
+            } else {
+                spdlog::error("[REST] Emergency close failed: code={} msg={}",
+                    code, j.value("msg", "unknown"));
+                return false;
+            }
+        } catch (...) {
+            spdlog::error("[REST] Emergency close parse failed: {}", symbol);
+            return false;
+        }
+    }
+
+    // -- 부분 청산 (시장가 close 주문) --
+    // TP/SL 시그널로 부분 청산할 때 사용
+    OrderResponse close_partial(const std::string& symbol, double qty,
+                                const std::string& hold_side) {
+        // close의 side: long 포지션 청산 = sell, short 포지션 청산 = buy
+        std::string side = (hold_side == "long") ? "sell" : "buy";
+
+        std::string sym_str = symbol;
+        double rounded_qty = round_qty(sym_str, qty);
+        double min_qty_val = get_min_qty(sym_str);
+        if (rounded_qty < min_qty_val) rounded_qty = min_qty_val;
+
+        // sizeMultiplier 정밀도에 맞춘 문자열
+        auto it = m_contracts.find(sym_str);
+        double step = (it != m_contracts.end()) ? it->second.size_multiplier : 0.001;
+        int decimals = 0;
+        double s = step;
+        while (s < 1.0 && decimals < 10) { s *= 10; ++decimals; }
+        char qty_buf[32];
+        std::snprintf(qty_buf, sizeof(qty_buf), "%.*f", decimals, rounded_qty);
+
+        json body;
+        body["symbol"]      = symbol;
+        body["productType"] = "USDT-FUTURES";
+        body["marginMode"]  = "crossed";
+        body["marginCoin"]  = "USDT";
+        body["side"]        = side;
+        body["tradeSide"]   = "close";
+        body["orderType"]   = "market";
+        body["size"]        = std::string(qty_buf);
+        body["force"]       = "ioc";
+
+        auto body_str = body.dump();
+        const std::string path = "/api/v2/mix/order/place-order";
+
+        spdlog::info("[REST] Partial close: {} {} size={} hold={}",
+            side, symbol, qty_buf, hold_side);
+
+        auto resp_str = do_request("POST", path, body_str);
+        return parse_order_response(resp_str, 0);
     }
 
     // -- 레버리지 설정 (Bitget V2) --

@@ -1,9 +1,9 @@
 // ============================================================================
-// core/state_persistence.hpp -- JSON 상태 영속화
-// v1.0 | 2026-03-13
+// core/state_persistence.hpp -- JSON 상태 영속화 v2.0
+// v2.0 | 2026-03-15 | fsync 보장 + corruption recovery + backup
 //
-// 원자적 쓰기 (tmp → rename), 30초 자동 저장, 포지션 변경시 즉시 저장
-// 서버 재시작 시 자동 복구 (positions, trades, balance, peak_balance)
+// 원자적 쓰기 (tmp → fsync → rename), 30초 자동 저장, 포지션 변경시 즉시 저장
+// 서버 재시작 시 자동 복구: main → backup → 초기화 순서
 // ============================================================================
 #pragma once
 
@@ -14,6 +14,11 @@
 #include <fstream>
 #include <filesystem>
 #include <chrono>
+#include <cstdio>  // fflush, fileno
+
+#ifdef __linux__
+#include <unistd.h>  // fsync
+#endif
 
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
@@ -88,17 +93,48 @@ public:
 
     [[nodiscard]] LoadedState load_state() {
         std::lock_guard lock(m_mtx);
-        LoadedState result;
         auto path = m_data_dir + "/state.json";
+        auto backup = m_data_dir + "/state.json.bak";
 
-        if (!std::filesystem::exists(path)) {
-            spdlog::info("[STATE] No state file found, starting fresh");
+        // 우선순위: main → backup → 초기화
+        LoadedState result = try_load_file(path);
+        if (result.valid) return result;
+
+        spdlog::warn("[STATE] Main state corrupt/missing, trying backup...");
+        result = try_load_file(backup);
+        if (result.valid) {
+            spdlog::info("[STATE] Recovered from backup file");
             return result;
         }
 
+        spdlog::info("[STATE] No valid state found, starting fresh");
+        return result;
+    }
+
+    // ── Auto-save Check ──
+
+    [[nodiscard]] bool needs_save(int interval_sec = 30) const {
+        auto elapsed = std::chrono::steady_clock::now() - m_last_save;
+        return elapsed >= std::chrono::seconds(interval_sec);
+    }
+
+private:
+    // 파일에서 상태 로드 시도 (corruption 감지)
+    LoadedState try_load_file(const std::string& path) {
+        LoadedState result;
+        if (!std::filesystem::exists(path)) return result;
+
         try {
             std::ifstream f(path);
+            if (!f.is_open()) return result;
+
             auto state = nlohmann::json::parse(f);
+
+            // 최소 유효성 검증
+            if (!state.contains("balance") || !state.contains("positions")) {
+                spdlog::warn("[STATE] File {} missing required fields", path);
+                return result;
+            }
 
             result.balance = state.value("balance", 0.0);
             result.peak_balance = state.value("peak_balance", 0.0);
@@ -126,29 +162,53 @@ public:
             }
 
             result.valid = true;
-            spdlog::info("[STATE] Loaded: balance={:.2f} positions={} trades={}",
-                result.balance, result.positions.size(), result.trades.size());
+            spdlog::info("[STATE] Loaded {}: balance={:.2f} positions={} trades={}",
+                path, result.balance, result.positions.size(), result.trades.size());
         } catch (const std::exception& e) {
-            spdlog::error("[STATE] Load failed: {}", e.what());
+            spdlog::error("[STATE] Load failed for {}: {}", path, e.what());
         }
         return result;
     }
 
-    // ── Auto-save Check ──
-
-    [[nodiscard]] bool needs_save(int interval_sec = 30) const {
-        auto elapsed = std::chrono::steady_clock::now() - m_last_save;
-        return elapsed >= std::chrono::seconds(interval_sec);
-    }
-
-private:
     void atomic_write(const std::string& path, const nlohmann::json& data) {
         auto tmp = path + ".tmp";
+        auto backup = path + ".bak";
+
+        // 1. Write to temp file
         {
-            std::ofstream f(tmp);
-            if (!f.is_open()) throw std::runtime_error("Cannot open " + tmp);
-            f << data.dump(2);
+            std::FILE* fp = std::fopen(tmp.c_str(), "w");
+            if (!fp) throw std::runtime_error("Cannot open " + tmp);
+            auto content = data.dump(2);
+            std::fwrite(content.data(), 1, content.size(), fp);
+            std::fflush(fp);
+#ifdef __linux__
+            // fsync: 디스크에 물리적으로 기록 보장
+            ::fsync(fileno(fp));
+#endif
+            std::fclose(fp);
         }
+
+        // 2. Validate written file (re-read and parse)
+        {
+            std::ifstream check(tmp);
+            if (!check.is_open()) throw std::runtime_error("Cannot verify " + tmp);
+            auto verify = nlohmann::json::parse(check);
+            if (!verify.contains("balance")) {
+                throw std::runtime_error("Written state file validation failed");
+            }
+        }
+
+        // 3. Backup current state before overwrite
+        if (std::filesystem::exists(path)) {
+            std::error_code ec;
+            std::filesystem::copy_file(path, backup,
+                std::filesystem::copy_options::overwrite_existing, ec);
+            if (ec) {
+                spdlog::warn("[STATE] Backup copy failed: {}", ec.message());
+            }
+        }
+
+        // 4. Atomic rename
         std::filesystem::rename(tmp, path);
     }
 

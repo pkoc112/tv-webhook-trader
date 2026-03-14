@@ -1,13 +1,13 @@
 // ============================================================================
-// execution/execution_engine.hpp -- 멀티스레드 주문 실행 엔진 v4.0
-// 2026-03-13 | 고급 리스크 엔진 통합
+// execution/execution_engine.hpp -- 멀티스레드 주문 실행 엔진 v5.0
+// 2026-03-15 | 안전성 강화 패치
 //
-// v4.0 변경:
-//   - SymbolScorer, FeeAnalyzer, PositionSizer, PortfolioRiskManager 통합
-//   - ManagedPosition 기반 포지션 추적
-//   - StatePersistence 연동 (상태 저장/복구)
-//   - TF 필터 지원
-//   - Shadow 모드 (로그만, 실주문 안함)
+// v5.0 변경:
+//   - TP/SL 재시도 (3회 backoff) + 전체 실패 시 긴급 청산
+//   - Preset TP/SL 제거 → set_sfx_tpsl() 단일 경로로 통합
+//   - handle_tp/handle_sl 구현 (부분/전체 청산)
+//   - 주문 성공 즉시 상태 저장
+//   - StatePersistence fsync + corruption recovery
 //
 // 진입 파이프라인:
 //   Signal → Tier체크 → Fee체크 → Portfolio리스크 → 동적사이징 → 주문실행
@@ -523,10 +523,10 @@ private:
                 handle_entry(wid, rest, std::move(sig));
                 break;
             case SignalType::TP:
-                handle_tp(wid, sig);
+                handle_tp(wid, rest, sig);
                 break;
             case SignalType::SL:
-                handle_sl(wid, sig);
+                handle_sl(wid, rest, sig);
                 break;
             default:
                 spdlog::warn("[Worker-{}] Unknown: {}", wid, sig.alert);
@@ -668,13 +668,10 @@ private:
             return;
         }
 
-        // Preset TP/SL in the order itself (1 API call instead of 3)
-        double preset_tp = sig.has_tp1() ? sig.tp1 : 0;
-        double preset_sl = sig.has_sl()  ? sig.sl  : 0;
-
+        // 주문 실행 (preset TP/SL 사용하지 않음 — 별도 API로 확실하게 설정)
         m_order_limiter.acquire();
         m_risk.on_order_placed();
-        auto resp = rest.place_futures_order(order_req, preset_tp, preset_sl);
+        auto resp = rest.place_futures_order(order_req);
         m_risk.on_order_done();
 
         if (resp.status == OrderStatus::New) {
@@ -683,12 +680,16 @@ private:
             m_risk.on_position_opened(sig.symbol, sig.size, side_str);
             register_position(oid);
 
-            spdlog::info("[W-{}] OK {} {} sz={:.6f} exid={} presetTP={:.2f} presetSL={:.2f}",
-                wid, sig.action, sig.symbol, sig.size, resp.exchange_order_id,
-                preset_tp, preset_sl);
+            spdlog::info("[W-{}] OK {} {} sz={:.6f} exid={}",
+                wid, sig.action, sig.symbol, sig.size, resp.exchange_order_id);
 
-            // Fallback: always set TP/SL via separate API calls
-            // (Bitget preset params are unreliable for some order types)
+            // Fix 4: 주문 성공 즉시 상태 저장 (크래시 시 포지션 유실 방지)
+            {
+                std::lock_guard lock(m_pos_mtx);
+                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+            }
+
+            // TP/SL 설정 (재시도 + 실패 시 긴급 청산)
             set_sfx_tpsl(wid, rest, sig);
         } else {
             m_orders_rejected.fetch_add(1);
@@ -697,27 +698,189 @@ private:
         }
     }
 
-    void handle_tp(int wid, const WebhookSignal& sig) {
+    // ── TP 시그널 처리: 부분/전체 청산 ──
+    void handle_tp(int wid, BitgetRestClient& rest, const WebhookSignal& sig) {
         spdlog::info("[W-{}] TP {} {} @ {:.2f}", wid, sig.tp_level, sig.symbol, sig.price);
+
+        // hold_side 결정: bull 시그널 = long 포지션 청산
+        std::string hold_side = (sig.signal_direction == "bull") ? "long" : "short";
+
+        // 매칭되는 포지션 찾기
+        std::string matched_key;
+        double pos_qty = 0;
+        {
+            std::lock_guard lock(m_pos_mtx);
+            for (auto& [key, pos] : m_positions) {
+                if (pos.symbol == sig.symbol && pos.side == hold_side) {
+                    matched_key = key;
+                    pos_qty = pos.quantity;
+                    break;
+                }
+            }
+        }
+
+        if (matched_key.empty()) {
+            spdlog::warn("[W-{}] TP {} no matching position for {} hold={}",
+                wid, sig.tp_level, sig.symbol, hold_side);
+            return;
+        }
+
+        // TP 레벨별 청산 비율: TP1=33%, TP2=33%, TP3=나머지 전부
+        double close_ratio = 1.0;
+        if (sig.tp_level == "TP1")      close_ratio = 0.33;
+        else if (sig.tp_level == "TP2") close_ratio = 0.50;  // 남은 67%의 50% ≈ 33%
+
+        double close_qty = pos_qty * close_ratio;
+
+        m_order_limiter.acquire();
+        auto resp = rest.close_partial(sig.symbol, close_qty, hold_side);
+
+        if (resp.status == OrderStatus::New) {
+            spdlog::info("[W-{}] TP {} closed {:.6f}/{:.6f} of {}",
+                wid, sig.tp_level, close_qty, pos_qty, sig.symbol);
+
+            std::lock_guard lock(m_pos_mtx);
+            auto it = m_positions.find(matched_key);
+            if (it != m_positions.end()) {
+                if (sig.tp_level == "TP3" || close_ratio >= 0.99) {
+                    // 전체 청산 → 포지션 제거 + 거래 기록
+                    TradeRecord tr;
+                    tr.symbol = sig.symbol;
+                    tr.timeframe = it->second.timeframe;
+                    tr.exit_reason = sig.tp_level;
+                    tr.pnl = 0;  // 실제 PnL은 WebSocket 콜백에서 업데이트
+                    m_trades.push_back(tr);
+                    m_positions.erase(it);
+                } else {
+                    // 부분 청산 → 수량 차감
+                    it->second.quantity -= close_qty;
+                    if (it->second.quantity <= 0) {
+                        m_positions.erase(it);
+                    }
+                }
+                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+            }
+        } else {
+            spdlog::error("[W-{}] TP {} close failed: {} {}",
+                wid, sig.tp_level, resp.error_code,
+                std::string(resp.error_msg.data()));
+        }
     }
 
-    void handle_sl(int wid, const WebhookSignal& sig) {
+    // ── SL 시그널 처리: 전체 청산 ──
+    void handle_sl(int wid, BitgetRestClient& rest, const WebhookSignal& sig) {
         spdlog::info("[W-{}] SL {} @ {:.2f}", wid, sig.symbol, sig.price);
+
+        std::string hold_side = (sig.signal_direction == "bull") ? "long" : "short";
+
+        // 매칭 포지션 찾기
+        std::string matched_key;
+        {
+            std::lock_guard lock(m_pos_mtx);
+            for (auto& [key, pos] : m_positions) {
+                if (pos.symbol == sig.symbol && pos.side == hold_side) {
+                    matched_key = key;
+                    break;
+                }
+            }
+        }
+
+        if (matched_key.empty()) {
+            spdlog::warn("[W-{}] SL no matching position for {} hold={}",
+                wid, sig.symbol, hold_side);
+            return;
+        }
+
+        // flash close로 전체 청산
+        m_order_limiter.acquire();
+        bool closed = rest.flash_close_position(sig.symbol, hold_side);
+
+        if (closed) {
+            std::lock_guard lock(m_pos_mtx);
+            auto it = m_positions.find(matched_key);
+            if (it != m_positions.end()) {
+                TradeRecord tr;
+                tr.symbol = sig.symbol;
+                tr.timeframe = it->second.timeframe;
+                tr.exit_reason = "SL";
+                tr.pnl = 0;  // WebSocket에서 실제 PnL 업데이트
+                m_trades.push_back(tr);
+                m_positions.erase(it);
+                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+            }
+            spdlog::info("[W-{}] SL closed {} hold={}", wid, sig.symbol, hold_side);
+        } else {
+            spdlog::error("[W-{}] SL close FAILED for {} hold={}", wid, sig.symbol, hold_side);
+        }
     }
 
+    // ── TP/SL 설정: 3회 재시도 + 실패 시 긴급 청산 ──
     void set_sfx_tpsl(int wid, BitgetRestClient& rest, const WebhookSignal& sig) {
-        try {
-            std::string hold_side = sig.get_hold_side();
-            if (sig.has_tp1()) {
-                m_tpsl_limiter.acquire();
-                rest.place_tpsl(sig.symbol, "profit_plan", sig.tp1, sig.size, hold_side);
+        std::string hold_side = sig.get_hold_side();
+        bool tp_ok = !sig.has_tp1();  // TP 없으면 성공으로 간주
+        bool sl_ok = !sig.has_sl();   // SL 없으면 성공으로 간주
+
+        constexpr int MAX_RETRIES = 3;
+        constexpr int BASE_DELAY_MS = 200;  // 200ms, 400ms, 800ms
+
+        // TP 재시도
+        if (sig.has_tp1()) {
+            for (int attempt = 1; attempt <= MAX_RETRIES; ++attempt) {
+                try {
+                    m_tpsl_limiter.acquire();
+                    tp_ok = rest.place_tpsl(sig.symbol, "profit_plan", sig.tp1, sig.size, hold_side);
+                    if (tp_ok) break;
+                } catch (const std::exception& e) {
+                    spdlog::warn("[W-{}] TP attempt {}/{} failed: {}", wid, attempt, MAX_RETRIES, e.what());
+                }
+                if (attempt < MAX_RETRIES) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(BASE_DELAY_MS * (1 << (attempt - 1))));
+                }
             }
-            if (sig.has_sl()) {
-                m_tpsl_limiter.acquire();
-                rest.place_tpsl(sig.symbol, "loss_plan", sig.sl, sig.size, hold_side);
+        }
+
+        // SL 재시도
+        if (sig.has_sl()) {
+            for (int attempt = 1; attempt <= MAX_RETRIES; ++attempt) {
+                try {
+                    m_tpsl_limiter.acquire();
+                    sl_ok = rest.place_tpsl(sig.symbol, "loss_plan", sig.sl, sig.size, hold_side);
+                    if (sl_ok) break;
+                } catch (const std::exception& e) {
+                    spdlog::warn("[W-{}] SL attempt {}/{} failed: {}", wid, attempt, MAX_RETRIES, e.what());
+                }
+                if (attempt < MAX_RETRIES) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(BASE_DELAY_MS * (1 << (attempt - 1))));
+                }
             }
-        } catch (const std::exception& e) {
-            spdlog::error("[W-{}] TPSL fail: {}", wid, e.what());
+        }
+
+        // SL 설정 실패 → 보호 없는 포지션은 즉시 긴급 청산
+        if (!sl_ok) {
+            spdlog::error("[W-{}] CRITICAL: SL failed after {} retries for {} — EMERGENCY CLOSE",
+                wid, MAX_RETRIES, sig.symbol);
+            m_order_limiter.acquire();
+            rest.flash_close_position(sig.symbol, hold_side);
+
+            // 내부 상태에서도 포지션 제거
+            std::lock_guard lock(m_pos_mtx);
+            for (auto it = m_positions.begin(); it != m_positions.end(); ++it) {
+                if (it->second.symbol == sig.symbol && it->second.side == hold_side) {
+                    TradeRecord tr;
+                    tr.symbol = sig.symbol;
+                    tr.timeframe = it->second.timeframe;
+                    tr.exit_reason = "EMERGENCY_CLOSE_NO_SL";
+                    tr.pnl = 0;
+                    m_trades.push_back(tr);
+                    m_positions.erase(it);
+                    break;
+                }
+            }
+            m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+        } else if (!tp_ok) {
+            // TP만 실패: 위험하지 않으므로 로그만 (SL은 있음)
+            spdlog::warn("[W-{}] TP failed after {} retries for {} — SL is active, continuing",
+                wid, MAX_RETRIES, sig.symbol);
         }
     }
 
