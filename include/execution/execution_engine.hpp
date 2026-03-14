@@ -426,9 +426,9 @@ private:
         if (now_sec - last >= 120) {
             m_last_sync_ts.store(now_sec, std::memory_order_relaxed);
             try {
-                BitgetRestClient sync_rest;
-                sync_rest.init(m_trading.api_key, m_trading.api_secret,
-                               m_trading.api_passphrase, m_trading.base_url);
+                net::io_context sync_ioc;
+                BitgetRestClient sync_rest(sync_ioc, m_auth, m_rest_config);
+                sync_rest.set_contracts(m_contracts);
                 sync_positions_with_exchange(sync_rest);
                 fetch_real_balance(sync_rest);
                 spdlog::info("[Periodic] Position sync + balance refresh done");
