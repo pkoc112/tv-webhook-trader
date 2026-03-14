@@ -5,3 +5,5 @@ config/api_keys.json
 *.d
 .cache/
 compile_commands.json
+config/config.json
+config/api_keys.json
