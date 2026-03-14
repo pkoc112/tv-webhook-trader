@@ -668,6 +668,10 @@ private:
             spdlog::info("[W-{}] OK {} {} sz={:.6f} exid={} presetTP={:.2f} presetSL={:.2f}",
                 wid, sig.action, sig.symbol, sig.size, resp.exchange_order_id,
                 preset_tp, preset_sl);
+
+            // Fallback: always set TP/SL via separate API calls
+            // (Bitget preset params are unreliable for some order types)
+            set_sfx_tpsl(wid, rest, sig);
         } else {
             m_orders_rejected.fetch_add(1);
             spdlog::error("[W-{}] FAIL: err={} {}", wid, resp.error_code,
