@@ -196,6 +196,9 @@ private:
         net::io_context ioc;
         BitgetRestClient rest(ioc, m_auth, m_rest_config);
 
+        // 실제 Bitget 잔고 조회
+        fetch_real_balance(rest);
+
         // 심볼별 계약 정보 (sizeMultiplier) 로드
         rest.fetch_contracts();
         m_contracts = rest.get_contracts_cache();
@@ -213,6 +216,43 @@ private:
         }
         rest.disconnect();
         spdlog::info("[Exec] Leverage init complete, {} contracts loaded", m_contracts.size());
+    }
+
+    void fetch_real_balance(BitgetRestClient& rest) {
+        try {
+            auto account = rest.get_account();
+            auto code = account.value("code", "99999");
+            if (code == "00000" && account.contains("data")) {
+                auto& data = account["data"];
+                // Bitget V2: available = 사용 가능 잔고, accountEquity = 총 자산
+                double available = 0.0;
+                double equity = 0.0;
+                if (data.contains("available")) {
+                    available = std::stod(data["available"].get<std::string>());
+                }
+                if (data.contains("accountEquity")) {
+                    equity = std::stod(data["accountEquity"].get<std::string>());
+                }
+
+                // 사용 가능 잔고를 기준으로 설정
+                double real_balance = (available > 0) ? available : equity;
+                if (real_balance > 0) {
+                    std::lock_guard lock(m_pos_mtx);
+                    m_balance = real_balance;
+                    if (m_peak_balance < real_balance) m_peak_balance = real_balance;
+                    m_port_risk.update_balance(m_balance);
+                    spdlog::info("[Exec] Real Bitget balance: available={:.2f} equity={:.2f} -> using {:.2f}",
+                        available, equity, m_balance);
+                } else {
+                    spdlog::warn("[Exec] Bitget returned zero balance, keeping default: {:.2f}", m_balance);
+                }
+            } else {
+                spdlog::error("[Exec] Failed to fetch balance: code={} msg={}",
+                    code, account.value("msg", "unknown"));
+            }
+        } catch (const std::exception& e) {
+            spdlog::error("[Exec] Balance fetch error: {}", e.what());
+        }
     }
 
     void worker_loop(int wid) {
@@ -514,8 +554,8 @@ private:
     std::unordered_set<size_t> m_recent_fingerprints;
 
     mutable std::mutex m_pos_mtx;
-    double m_balance{1000.0};
-    double m_peak_balance{1000.0};
+    double m_balance{100.0};   // 안전 기본값; start() 시 Bitget 실잔고로 덮어씀
+    double m_peak_balance{100.0};
     std::unordered_map<std::string, ManagedPosition> m_positions;
     std::vector<TradeRecord> m_trades;
 };
