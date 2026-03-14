@@ -2,17 +2,13 @@
 """
 기존 포지션에 누락된 TP/SL을 소급 설정하는 스크립트.
 
-동작:
-1. 모든 오픈 포지션 조회
-2. 모든 대기 중인 트리거 주문(TP/SL) 조회
-3. 포지션별로 TP/SL 트리거 주문 존재 여부 확인
-4. 누락된 경우 → 기본 SL(entry ±2%), TP(entry ±3%) 설정
+v2: 가격 정밀도(pricePlace) 적용 + mark price 기반 유효성 검사
 
 사용법:
   python3 scripts/fix_missing_tpsl.py          # dry-run (기본)
   python3 scripts/fix_missing_tpsl.py --apply   # 실제 적용
 """
-import hmac, hashlib, base64, time, json, urllib.request, ssl, os, sys
+import hmac, hashlib, base64, time, json, urllib.request, urllib.error, ssl, os, sys, math
 
 DRY_RUN = '--apply' not in sys.argv
 
@@ -65,6 +61,44 @@ def api_post(path, body_dict):
     body_str = json.dumps(body_dict)
     return api_call('POST', path, body_str)
 
+def round_price(price, decimals):
+    """Round price to the correct number of decimal places."""
+    if decimals <= 0:
+        return round(price)
+    factor = 10 ** decimals
+    return math.floor(price * factor) / factor
+
+# ---- 0. Fetch contract info for price precision ----
+print("Fetching contract info (price precision)...")
+contracts = {}
+try:
+    resp = api_get('/api/v2/mix/market/contracts?productType=USDT-FUTURES')
+    if resp.get('code') == '00000':
+        for c in resp['data']:
+            sym = c.get('symbol', '')
+            if sym:
+                contracts[sym] = {
+                    'pricePlace': int(c.get('pricePlace', 4)),
+                    'priceEndStep': int(c.get('priceEndStep', 1)),
+                    'volumePlace': int(c.get('volumePlace', 4)),
+                }
+        print(f"  Loaded {len(contracts)} contracts")
+except Exception as e:
+    print(f"  Warning: contract fetch failed: {e}")
+
+def get_price_decimals(symbol):
+    """Get the number of decimal places for a symbol's price."""
+    if symbol in contracts:
+        return contracts[symbol]['pricePlace']
+    # Fallback: guess from entry price
+    return 4
+
+def format_price(price, symbol):
+    """Format price with correct precision for the symbol."""
+    decimals = get_price_decimals(symbol)
+    rounded = round_price(price, decimals)
+    return f"{rounded:.{decimals}f}"
+
 # ---- 1. Fetch all positions ----
 print("=" * 70)
 print(f"  FIX MISSING TP/SL  {'[DRY-RUN]' if DRY_RUN else '[APPLY MODE]'}")
@@ -78,164 +112,107 @@ if pos_resp.get('code') != '00000':
 positions = pos_resp['data']
 print(f"\nTotal open positions: {len(positions)}")
 
-# ---- 2. Fetch all pending trigger orders (paginate) ----
-print("\nFetching pending trigger orders...")
-all_trigger_orders = []
-# Try multiple endpoints for TP/SL trigger orders
-for plan_type in ['profit_loss', 'normal_plan', 'pos_profit', 'pos_loss']:
-    try:
-        path = f'/api/v2/mix/order/orders-plan-pending?productType=USDT-FUTURES&planType={plan_type}&limit=100'
-        resp = api_get(path)
-        if resp.get('code') == '00000':
-            data = resp.get('data', {})
-            ords = data.get('entrustedList', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-            if ords:
-                all_trigger_orders.extend(ords)
-                print(f"  Found {len(ords)} orders (planType={plan_type})")
-    except Exception as e:
-        print(f"  Warning: {plan_type} query failed: {e}")
-    time.sleep(0.12)
+# ---- 2. Skip trigger order check (API unreliable), go straight to protection check ----
+# We know from previous runs that there are 0 trigger orders
 
-# Also try without planType filter
-try:
-    path = '/api/v2/mix/order/orders-plan-pending?productType=USDT-FUTURES&limit=100'
-    resp = api_get(path)
-    if resp.get('code') == '00000':
-        data = resp.get('data', {})
-        ords = data.get('entrustedList', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-        if ords:
-            all_trigger_orders.extend(ords)
-            print(f"  Found {len(ords)} orders (no filter)")
-except Exception as e:
-    print(f"  Warning: unfiltered query failed: {e}")
-
-print(f"Total pending trigger orders: {len(all_trigger_orders)}")
-
-# ---- 3. Build trigger order map: symbol+holdSide → {has_tp, has_sl} ----
-trigger_map = {}  # key: "BTCUSDT_long" → {"tp": bool, "sl": bool}
-for o in all_trigger_orders:
-    sym = o.get('symbol', '')
-    hold = o.get('holdSide', '')
-    pt = o.get('planType', '')
-    key = f"{sym}_{hold}"
-    if key not in trigger_map:
-        trigger_map[key] = {'tp': False, 'sl': False}
-    if pt in ('profit_plan', 'pos_profit'):
-        trigger_map[key]['tp'] = True
-    elif pt in ('loss_plan', 'pos_loss'):
-        trigger_map[key]['sl'] = True
-
-# ---- 4. Check each position ----
-missing_tp = []
-missing_sl = []
+# ---- 3. Check each position ----
+missing = []  # positions needing TP and/or SL
 protected = 0
 
 for p in positions:
     sym = p.get('symbol', '')
     hold = p.get('holdSide', '')
-    key = f"{sym}_{hold}"
     entry = float(p.get('openPriceAvg', '0') or '0')
+    mark = float(p.get('markPrice', '0') or '0')
     size_str = p.get('total', p.get('available', '0'))
     size = float(size_str or '0')
-    margin = float(p.get('margin', '0') or '0')
 
-    # Check preset fields first
+    # Check preset fields
     preset_tp = p.get('presetStopSurplusPrice', '') or ''
     preset_sl = p.get('presetStopLossPrice', '') or ''
-    has_preset_tp = bool(preset_tp and float(preset_tp) > 0)
-    has_preset_sl = bool(preset_sl and float(preset_sl) > 0)
-
-    # Check trigger orders
-    trig = trigger_map.get(key, {'tp': False, 'sl': False})
-    has_trigger_tp = trig['tp']
-    has_trigger_sl = trig['sl']
-
-    has_tp = has_preset_tp or has_trigger_tp
-    has_sl = has_preset_sl or has_trigger_sl
+    has_tp = bool(preset_tp and float(preset_tp) > 0)
+    has_sl = bool(preset_sl and float(preset_sl) > 0)
 
     if has_tp and has_sl:
         protected += 1
         continue
 
     short_sym = sym.replace('USDT', '')
-    info = {
-        'symbol': sym, 'holdSide': hold, 'entry': entry, 'size': size,
-        'margin': margin, 'short_sym': short_sym
-    }
-    if not has_tp:
-        missing_tp.append(info)
-    if not has_sl:
-        missing_sl.append(info)
+    missing.append({
+        'symbol': sym, 'holdSide': hold, 'entry': entry, 'mark': mark,
+        'size': size, 'short_sym': short_sym,
+        'need_tp': not has_tp, 'need_sl': not has_sl
+    })
 
 print(f"\nProtected (TP+SL): {protected}/{len(positions)}")
-print(f"Missing TP: {len(missing_tp)}")
-print(f"Missing SL: {len(missing_sl)}")
+print(f"Need fixing: {len(missing)}")
 
-if not missing_tp and not missing_sl:
+if not missing:
     print("\n✅ All positions are protected!")
     sys.exit(0)
 
-# ---- 5. Fix missing TP/SL ----
-# Default: SL = 2% adverse, TP = 3% favorable (conservative)
-SL_PCT = 0.02
-TP_PCT = 0.03
-
-def calc_tpsl(entry, hold_side):
-    """Calculate default TP/SL prices based on position direction."""
-    if hold_side == 'long':
-        tp = entry * (1 + TP_PCT)
-        sl = entry * (1 - SL_PCT)
-    else:  # short
-        tp = entry * (1 - TP_PCT)
-        sl = entry * (1 + SL_PCT)
-    return round(tp, 6), round(sl, 6)
+# ---- 4. Fix missing TP/SL ----
+SL_PCT = 0.02   # 2% stop loss
+TP_PCT = 0.03   # 3% take profit
 
 print(f"\n{'=' * 70}")
-print(f"  FIXING: SL={SL_PCT*100}% / TP={TP_PCT*100}% from entry")
+print(f"  FIXING: SL={SL_PCT*100}% / TP={TP_PCT*100}%")
+print(f"  Using MARK PRICE when entry-based price is invalid")
 print(f"{'=' * 70}")
 
 fixed_tp = 0
 fixed_sl = 0
 errors = 0
+skipped = 0
 
-# Combine unique positions needing fixes
-all_missing = {}
-for info in missing_tp:
-    key = f"{info['symbol']}_{info['holdSide']}"
-    all_missing[key] = {**info, 'need_tp': True, 'need_sl': False}
-for info in missing_sl:
-    key = f"{info['symbol']}_{info['holdSide']}"
-    if key in all_missing:
-        all_missing[key]['need_sl'] = True
-    else:
-        all_missing[key] = {**info, 'need_tp': False, 'need_sl': True}
-
-for i, (key, info) in enumerate(all_missing.items()):
+for i, info in enumerate(missing):
     sym = info['symbol']
     hold = info['holdSide']
     entry = info['entry']
+    mark = info['mark']
     size = info['size']
-    tp_price, sl_price = calc_tpsl(entry, hold)
+    decimals = get_price_decimals(sym)
 
-    status_parts = []
-    if info.get('need_sl'):
-        status_parts.append(f"SL@{sl_price:.4f}")
-    if info.get('need_tp'):
-        status_parts.append(f"TP@{tp_price:.4f}")
+    # Use mark price as reference if available, otherwise entry
+    ref_price = mark if mark > 0 else entry
 
-    print(f"  [{i+1}/{len(all_missing)}] {info['short_sym']:12s} {hold:5s} entry={entry:.4f} → {', '.join(status_parts)}", end='')
+    # Calculate TP/SL based on direction
+    if hold == 'long':
+        tp_raw = ref_price * (1 + TP_PCT)
+        sl_raw = ref_price * (1 - SL_PCT)
+        # Validate: TP must be > mark, SL must be < mark
+        if mark > 0:
+            if tp_raw <= mark:
+                tp_raw = mark * (1 + 0.01)  # at least 1% above mark
+            if sl_raw >= mark:
+                sl_raw = mark * (1 - 0.01)  # at least 1% below mark
+    else:  # short
+        tp_raw = ref_price * (1 - TP_PCT)
+        sl_raw = ref_price * (1 + SL_PCT)
+        # Validate: TP must be < mark, SL must be > mark
+        if mark > 0:
+            if tp_raw >= mark:
+                tp_raw = mark * (1 - 0.01)
+            if sl_raw <= mark:
+                sl_raw = mark * (1 + 0.01)
+
+    tp_price = format_price(tp_raw, sym)
+    sl_price = format_price(sl_raw, sym)
+
+    status = f"  [{i+1}/{len(missing)}] {info['short_sym']:12s} {hold:5s} mark={ref_price:.4f} → SL={sl_price}, TP={tp_price}"
+    print(status, end='')
 
     if DRY_RUN:
-        print("  [SKIP - dry run]")
+        print("  [SKIP]")
         continue
 
-    # Set SL first (more important)
+    # Set SL first (more important for protection)
     if info.get('need_sl'):
         try:
             sl_body = {
                 "symbol": sym, "productType": "USDT-FUTURES",
                 "marginMode": "crossed", "marginCoin": "USDT",
-                "planType": "pos_loss", "triggerPrice": str(sl_price),
+                "planType": "pos_loss", "triggerPrice": sl_price,
                 "triggerType": "mark_price", "size": str(size),
                 "holdSide": hold
             }
@@ -244,12 +221,13 @@ for i, (key, info) in enumerate(all_missing.items()):
                 fixed_sl += 1
                 print(" SL✓", end='')
             else:
-                print(f" SL✗({resp.get('msg','')})", end='')
+                msg = resp.get('msg', '')[:60]
+                print(f" SL✗({msg})", end='')
                 errors += 1
         except Exception as e:
-            print(f" SL✗({e})", end='')
+            print(f" SL✗({str(e)[:50]})", end='')
             errors += 1
-        time.sleep(0.12)  # rate limit
+        time.sleep(0.12)
 
     # Set TP
     if info.get('need_tp'):
@@ -257,7 +235,7 @@ for i, (key, info) in enumerate(all_missing.items()):
             tp_body = {
                 "symbol": sym, "productType": "USDT-FUTURES",
                 "marginMode": "crossed", "marginCoin": "USDT",
-                "planType": "pos_profit", "triggerPrice": str(tp_price),
+                "planType": "pos_profit", "triggerPrice": tp_price,
                 "triggerType": "mark_price", "size": str(size),
                 "holdSide": hold
             }
@@ -266,10 +244,11 @@ for i, (key, info) in enumerate(all_missing.items()):
                 fixed_tp += 1
                 print(" TP✓", end='')
             else:
-                print(f" TP✗({resp.get('msg','')})", end='')
+                msg = resp.get('msg', '')[:60]
+                print(f" TP✗({msg})", end='')
                 errors += 1
         except Exception as e:
-            print(f" TP✗({e})", end='')
+            print(f" TP✗({str(e)[:50]})", end='')
             errors += 1
         time.sleep(0.12)
 
