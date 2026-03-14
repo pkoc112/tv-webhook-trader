@@ -56,7 +56,9 @@ public:
     }
 
     // -- 선물 주문 실행 --
-    OrderResponse place_futures_order(const OrderRequest& req) {
+    // preset_tp / preset_sl: 0이면 미설정, >0이면 preset TP/SL을 주문에 포함
+    OrderResponse place_futures_order(const OrderRequest& req,
+                                      double preset_tp = 0, double preset_sl = 0) {
         // qty를 심볼의 sizeMultiplier에 맞게 반올림
         std::string sym_str = req.symbol.str();
         double rounded_qty = round_qty(sym_str, req.quantity);
@@ -92,6 +94,14 @@ public:
             body["force"] = "gtc";
         } else {
             body["force"] = "ioc";
+        }
+
+        // Preset TP/SL in the same order call (reduces 3 API calls to 1)
+        if (preset_tp > 0) {
+            body["presetStopSurplusPrice"] = std::to_string(preset_tp);
+        }
+        if (preset_sl > 0) {
+            body["presetStopLossPrice"] = std::to_string(preset_sl);
         }
 
         auto body_str = body.dump();

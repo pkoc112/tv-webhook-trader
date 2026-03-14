@@ -420,22 +420,76 @@ private:
         }
     }
 
+    // Parse timeframe string (e.g. "1", "5", "15", "1h", "4h") to minutes
+    static int parse_timeframe_minutes(const std::string& tf) {
+        if (tf.empty()) return 0;
+        try {
+            if (tf.back() == 'h' || tf.back() == 'H') {
+                return std::stoi(tf.substr(0, tf.size() - 1)) * 60;
+            }
+            if (tf.back() == 'd' || tf.back() == 'D') {
+                return std::stoi(tf.substr(0, tf.size() - 1)) * 1440;
+            }
+            return std::stoi(tf);
+        } catch (...) { return 0; }
+    }
+
     void process_signal(int wid, BitgetRestClient& rest, WebhookSignal&& sig) {
-        auto latency_ns = now_ns() - sig.received_at;
+        auto now = now_ns();
+        auto latency_ns = now - sig.received_at;
+        double latency_ms = latency_ns / 1'000'000.0;
         spdlog::info("[Worker-{}] {} {} {} @ {:.2f} (lat: {:.1f}ms)",
             wid, signal_type_str(sig.sig_type), sig.action, sig.symbol,
-            sig.price, latency_ns / 1'000'000.0);
+            sig.price, latency_ms);
 
-        // 중복 방지
+        // Stale signal detection - skip signals that are too old
+        {
+            int64_t sig_age_ms = static_cast<int64_t>(latency_ms);
+            int tf_minutes = parse_timeframe_minutes(sig.timeframe);
+
+            // TF-based staleness thresholds (ms)
+            int64_t max_age_ms = 30000; // default 30s
+            if (tf_minutes <= 1)       max_age_ms = 10000;   // 1m: 10s
+            else if (tf_minutes <= 5)  max_age_ms = 30000;   // 5m: 30s
+            else if (tf_minutes <= 15) max_age_ms = 60000;   // 15m: 60s
+            else                       max_age_ms = 120000;  // 30m+: 120s
+
+            if (sig_age_ms > max_age_ms) {
+                spdlog::warn("[W-{}] STALE skip: {} {} age={}ms limit={}ms",
+                    wid, sig.symbol, sig.action, sig_age_ms, max_age_ms);
+                m_orders_skipped.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+        }
+
+        // 중복 방지 (time-based eviction, 120s TTL)
         auto fp = sig.fingerprint();
         {
             std::lock_guard lock(m_fp_mtx);
+
+            // Evict entries older than 120 seconds
+            constexpr int64_t FP_TTL_NS = 120'000'000'000LL; // 120s in nanoseconds
+            if (m_recent_fingerprints.size() > 100) {
+                for (auto it = m_recent_fingerprints.begin(); it != m_recent_fingerprints.end(); ) {
+                    if ((now - it->second) > FP_TTL_NS) {
+                        it = m_recent_fingerprints.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
+
+            // Safety net: if map grows too large despite eviction, clear it
+            if (m_recent_fingerprints.size() > 50000) {
+                spdlog::warn("[W-{}] Fingerprint map overflow ({}), clearing", wid, m_recent_fingerprints.size());
+                m_recent_fingerprints.clear();
+            }
+
             if (m_recent_fingerprints.count(fp)) {
                 m_orders_skipped.fetch_add(1);
                 return;
             }
-            m_recent_fingerprints.insert(fp);
-            if (m_recent_fingerprints.size() > 2000) m_recent_fingerprints.clear();
+            m_recent_fingerprints.emplace(fp, now);
         }
 
         // 화이트리스트
@@ -464,7 +518,7 @@ private:
 
     // ── 진입: 고급 리스크 파이프라인 ──
     void handle_entry(int wid, BitgetRestClient& rest, WebhookSignal&& sig) {
-        if (!m_sym_locks.wait_lock(sig.symbol, std::chrono::seconds(5))) {
+        if (!m_sym_locks.wait_lock(sig.symbol, std::chrono::seconds(15))) {
             m_orders_skipped.fetch_add(1);
             return;
         }
@@ -596,9 +650,13 @@ private:
             return;
         }
 
+        // Preset TP/SL in the order itself (1 API call instead of 3)
+        double preset_tp = sig.has_tp1() ? sig.tp1 : 0;
+        double preset_sl = sig.has_sl()  ? sig.sl  : 0;
+
         m_order_limiter.acquire();
         m_risk.on_order_placed();
-        auto resp = rest.place_futures_order(order_req);
+        auto resp = rest.place_futures_order(order_req, preset_tp, preset_sl);
         m_risk.on_order_done();
 
         if (resp.status == OrderStatus::New) {
@@ -607,9 +665,9 @@ private:
             m_risk.on_position_opened(sig.symbol, sig.size, side_str);
             register_position(oid);
 
-            spdlog::info("[W-{}] OK {} {} sz={:.6f} exid={}",
-                wid, sig.action, sig.symbol, sig.size, resp.exchange_order_id);
-            set_sfx_tpsl(wid, rest, sig);
+            spdlog::info("[W-{}] OK {} {} sz={:.6f} exid={} presetTP={:.2f} presetSL={:.2f}",
+                wid, sig.action, sig.symbol, sig.size, resp.exchange_order_id,
+                preset_tp, preset_sl);
         } else {
             m_orders_rejected.fetch_add(1);
             spdlog::error("[W-{}] FAIL: err={} {}", wid, resp.error_code,
@@ -678,7 +736,7 @@ private:
     std::atomic<uint64_t> m_risk_skips{0};
 
     std::mutex m_fp_mtx;
-    std::unordered_set<size_t> m_recent_fingerprints;
+    std::unordered_map<size_t, int64_t> m_recent_fingerprints;  // fingerprint -> timestamp_ns
 
     mutable std::mutex m_pos_mtx;
     double m_balance{100.0};   // 안전 기본값; start() 시 Bitget 실잔고로 덮어씀

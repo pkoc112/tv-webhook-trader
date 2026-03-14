@@ -145,7 +145,7 @@ int main(int argc, char* argv[]) {
         std::signal(SIGTERM, signal_handler);
 
         // -- 1. 시그널 큐 --
-        hft::SPSCQueue<hft::WebhookSignal> signal_queue(1024);
+        hft::SPSCQueue<hft::WebhookSignal> signal_queue(8192);
 
         // -- 2. Bitget 인증 --
         hft::BitgetAuth auth(
@@ -265,8 +265,10 @@ int main(int argc, char* argv[]) {
         }
 
         auto on_signal = [&signal_queue](hft::WebhookSignal&& sig) {
+            auto action = sig.action;
+            auto symbol = sig.symbol;
             if (!signal_queue.try_push(std::move(sig))) {
-                spdlog::error("[QUEUE] Full! Dropping: {} {}", sig.action, sig.symbol);
+                spdlog::error("[QUEUE] Full! Dropping: {} {}", action, symbol);
             }
         };
 
@@ -276,7 +278,7 @@ int main(int argc, char* argv[]) {
         spdlog::info("Webhook server on port {}", wh_config.port);
         spdlog::info("================================================");
 
-        server.run(config.value("server_threads", 2));
+        server.run(config.value("server_threads", 8));
 
         // 종료
         g_server.store(nullptr, std::memory_order_relaxed);

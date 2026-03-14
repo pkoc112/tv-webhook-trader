@@ -78,6 +78,7 @@ public:
         , m_req_counter(req_counter) {}
 
     void run() {
+        beast::get_lowest_layer(m_stream).expires_after(std::chrono::seconds(10));
         m_stream.async_handshake(ssl::stream_base::server,
             [self = shared_from_this()](beast::error_code ec) {
                 if (ec) { spdlog::warn("[HTTP] SSL handshake failed: {}", ec.message()); return; }
@@ -90,6 +91,7 @@ private:
         m_parser.emplace();
         m_parser->body_limit(m_config->max_body_size);
 
+        beast::get_lowest_layer(m_stream).expires_after(std::chrono::seconds(10));
         http::async_read(m_stream, m_buffer, *m_parser,
             [self = shared_from_this()](beast::error_code ec, size_t) {
                 if (ec) {
@@ -243,7 +245,7 @@ public:
         m_ssl_ctx.use_private_key_file(config.ssl_key_path, ssl::context::pem);
     }
 
-    void run(int threads = 2) {
+    void run(int threads = 8) {
         auto ep = tcp::endpoint(net::ip::make_address(m_config->bind_address), m_config->port);
         auto listener = std::make_shared<WebhookListener>(
             m_ioc, m_ssl_ctx, ep, m_config, m_callback, m_total_requests);

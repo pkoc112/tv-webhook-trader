@@ -77,6 +77,10 @@ struct WebhookSignal {
     // -- 수신 시각 --
     Timestamp   received_at{0};
 
+    // -- 우선순위 (높을수록 먼저 처리) --
+    // TF >= 60m: priority 3, TF >= 15m: 2, TF >= 5m: 1, TF 1m: 0
+    int         priority{0};
+
     // -- JSON 파싱 --
     static std::optional<WebhookSignal> from_json(const std::string& body) {
         // 1차 시도: 원본 JSON 그대로 파싱
@@ -283,6 +287,9 @@ private:
         sig.timeframe        = j.value("timeframe", "");
         sig.type             = j.value("type", "crypto");
 
+        // Priority based on timeframe (higher TF = higher priority)
+        sig.priority = calc_priority(sig.timeframe);
+
         sig.alert            = j.value("alert", "");
         sig.signal_direction = j.value("signal_direction", "");
 
@@ -376,6 +383,26 @@ private:
         }
 
         return sig;
+    }
+
+    // Calculate signal priority from timeframe string
+    // TF >= 60m: 3, >= 15m: 2, >= 5m: 1, else: 0
+    static int calc_priority(const std::string& tf) {
+        if (tf.empty()) return 0;
+        try {
+            int minutes = 0;
+            if (tf.back() == 'h' || tf.back() == 'H') {
+                minutes = std::stoi(tf.substr(0, tf.size() - 1)) * 60;
+            } else if (tf.back() == 'd' || tf.back() == 'D') {
+                minutes = std::stoi(tf.substr(0, tf.size() - 1)) * 1440;
+            } else {
+                minutes = std::stoi(tf);
+            }
+            if (minutes >= 60) return 3;
+            if (minutes >= 15) return 2;
+            if (minutes >= 5)  return 1;
+            return 0;
+        } catch (...) { return 0; }
     }
 
     static std::string normalize_symbol(const std::string& ticker) {
