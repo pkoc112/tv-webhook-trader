@@ -418,6 +418,24 @@ private:
             std::lock_guard lock(m_pos_mtx);
             m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
         }
+
+        // Periodic position sync with exchange (every 120 seconds)
+        auto now_sec = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        auto last = m_last_sync_ts.load(std::memory_order_relaxed);
+        if (now_sec - last >= 120) {
+            m_last_sync_ts.store(now_sec, std::memory_order_relaxed);
+            try {
+                BitgetRestClient sync_rest;
+                sync_rest.init(m_trading.api_key, m_trading.api_secret,
+                               m_trading.api_passphrase, m_trading.base_url);
+                sync_positions_with_exchange(sync_rest);
+                fetch_real_balance(sync_rest);
+                spdlog::info("[Periodic] Position sync + balance refresh done");
+            } catch (const std::exception& e) {
+                spdlog::warn("[Periodic] Sync failed: {}", e.what());
+            }
+        }
     }
 
     // Parse timeframe string (e.g. "1", "5", "15", "1h", "4h") to minutes
@@ -741,6 +759,8 @@ private:
 
     std::mutex m_fp_mtx;
     std::unordered_map<size_t, int64_t> m_recent_fingerprints;  // fingerprint -> timestamp_ns
+
+    std::atomic<int64_t> m_last_sync_ts{0};  // epoch seconds of last position sync
 
     mutable std::mutex m_pos_mtx;
     double m_balance{100.0};   // 안전 기본값; start() 시 Bitget 실잔고로 덮어씀
