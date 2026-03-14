@@ -40,7 +40,7 @@ print("=" * 60)
 print("1. ACCOUNT BALANCE")
 print("=" * 60)
 try:
-    acc = api_get('/api/v2/mix/account/account?productType=USDT-FUTURES&symbol=BTCUSDT')
+    acc = api_get('/api/v2/mix/account/account?symbol=BTCUSDT&productType=USDT-FUTURES&marginCoin=USDT')
     if acc.get('code') == '00000':
         d = acc['data']
         print(f"   Available:  {d.get('available','?')}")
@@ -80,26 +80,23 @@ print("3. PENDING TRIGGER ORDERS (TP/SL)")
 print("=" * 60)
 all_trigger_orders = []
 try:
-    last_end_id = ''
-    page = 0
-    while True:
-        page += 1
-        path = '/api/v2/mix/order/orders-plan-pending?productType=USDT-FUTURES&limit=100'
-        if last_end_id:
-            path += f'&idLessThan={last_end_id}'
-        resp = api_get(path)
-        if resp.get('code') != '00000':
-            print(f"   Trigger orders error (page {page}): {resp.get('msg','?')}")
-            break
-        data = resp.get('data', {})
-        ords = data.get('entrustedList', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-        if not ords:
-            break
-        all_trigger_orders.extend(ords)
-        last_end_id = data.get('endId', '') if isinstance(data, dict) else ''
-        if not last_end_id or len(ords) < 100:
-            break
-        time.sleep(0.15)
+    # Try multiple planType values and unfiltered
+    for plan_type in ['profit_loss', 'normal_plan', 'pos_profit', 'pos_loss', None]:
+        try:
+            path = '/api/v2/mix/order/orders-plan-pending?productType=USDT-FUTURES&limit=100'
+            if plan_type:
+                path += f'&planType={plan_type}'
+            resp = api_get(path)
+            if resp.get('code') == '00000':
+                data = resp.get('data', {})
+                ords = data.get('entrustedList', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                if ords:
+                    all_trigger_orders.extend(ords)
+                    label = plan_type or 'all'
+                    print(f"   Found {len(ords)} orders ({label})")
+        except Exception as e:
+            pass  # silently skip failed queries
+        time.sleep(0.12)
 
     print(f"   Total pending trigger orders: {len(all_trigger_orders)}")
     plan_types = {}

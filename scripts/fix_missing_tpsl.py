@@ -74,26 +74,33 @@ print(f"\nTotal open positions: {len(positions)}")
 # ---- 2. Fetch all pending trigger orders (paginate) ----
 print("\nFetching pending trigger orders...")
 all_trigger_orders = []
-last_end_id = ''
-page = 0
-while True:
-    page += 1
+# Try multiple endpoints for TP/SL trigger orders
+for plan_type in ['profit_loss', 'normal_plan', 'pos_profit', 'pos_loss']:
+    try:
+        path = f'/api/v2/mix/order/orders-plan-pending?productType=USDT-FUTURES&planType={plan_type}&limit=100'
+        resp = api_get(path)
+        if resp.get('code') == '00000':
+            data = resp.get('data', {})
+            ords = data.get('entrustedList', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            if ords:
+                all_trigger_orders.extend(ords)
+                print(f"  Found {len(ords)} orders (planType={plan_type})")
+    except Exception as e:
+        print(f"  Warning: {plan_type} query failed: {e}")
+    time.sleep(0.12)
+
+# Also try without planType filter
+try:
     path = '/api/v2/mix/order/orders-plan-pending?productType=USDT-FUTURES&limit=100'
-    if last_end_id:
-        path += f'&idLessThan={last_end_id}'
     resp = api_get(path)
-    if resp.get('code') != '00000':
-        print(f"  Warning: trigger orders fetch error (page {page}): {resp.get('msg','?')}")
-        break
-    data = resp.get('data', {})
-    ords = data.get('entrustedList', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-    if not ords:
-        break
-    all_trigger_orders.extend(ords)
-    last_end_id = data.get('endId', '') if isinstance(data, dict) else ''
-    if not last_end_id or len(ords) < 100:
-        break
-    time.sleep(0.15)  # rate limit
+    if resp.get('code') == '00000':
+        data = resp.get('data', {})
+        ords = data.get('entrustedList', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+        if ords:
+            all_trigger_orders.extend(ords)
+            print(f"  Found {len(ords)} orders (no filter)")
+except Exception as e:
+    print(f"  Warning: unfiltered query failed: {e}")
 
 print(f"Total pending trigger orders: {len(all_trigger_orders)}")
 
