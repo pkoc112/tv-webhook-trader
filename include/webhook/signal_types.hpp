@@ -90,31 +90,98 @@ struct WebhookSignal {
 
         // 2차 시도: TradingView Custom JSON 이중 따옴표 수정
         // 전략: 모든 연속 따옴표("")를 단일 따옴표(")로 축소
-        // TradingView SFX 페이로드에는 빈 문자열 값이 없으므로 안전함
         std::string sanitized;
         sanitized.reserve(body.size());
         for (size_t i = 0; i < body.size(); ++i) {
             sanitized += body[i];
-            // 연속된 " 를 하나로 축소
             if (body[i] == '"') {
                 while (i + 1 < body.size() && body[i + 1] == '"') {
-                    ++i; // 추가 " 건너뜀
+                    ++i;
                 }
             }
         }
 
-        spdlog::warn("[Signal] Sanitized: {}", sanitized.substr(0, 500));
-
         j = json::parse(sanitized, nullptr, false);
-        if (j.is_discarded()) {
-            spdlog::warn("[Signal] JSON parse failed: {}", body.substr(0, 500));
-            return std::nullopt;
+        if (!j.is_discarded()) {
+            WebhookSignal sig;
+            sig.received_at = now_ns();
+            if (j.contains("algorithm") || j.contains("alert")) return parse_sfx(j, sig);
+            return parse_generic(j, sig);
         }
 
-        WebhookSignal sig;
-        sig.received_at = now_ns();
-        if (j.contains("algorithm") || j.contains("alert")) return parse_sfx(j, sig);
-        return parse_generic(j, sig);
+        // 3차 시도: TradingView Custom JSON 병합 시 닫는 따옴표 누락 수정
+        // TradingView가 Custom JSON {"token":"val"} 을 SFX JSON에 삽입할 때
+        // ""token"": ""val 형태가 되어 축소 후 "token": "val, "next_key" 가 됨
+        // → 토큰 값의 닫는 " 가 누락되어 JSON 파싱 실패
+        // 수정: 문자열 값이 닫히지 않은 채 , " 패턴이 나오면 닫는 " 삽입
+        std::string fixed = sanitized;
+        size_t search_from = 0;
+        bool did_fix = false;
+        while (search_from < fixed.size()) {
+            // JSON 키: "..." : "값시작 패턴 찾기
+            auto colon = fixed.find(':', search_from);
+            if (colon == std::string::npos) break;
+
+            // : 뒤에 공백 건너뛰고 " 찾기
+            size_t vs = colon + 1;
+            while (vs < fixed.size() && fixed[vs] == ' ') ++vs;
+            if (vs >= fixed.size() || fixed[vs] != '"') {
+                search_from = colon + 1;
+                continue;  // 값이 문자열이 아님 (숫자 등)
+            }
+
+            // 문자열 값 내부 스캔: 닫는 " 가 정상인지 확인
+            size_t s = vs + 1;
+            bool normal_close = false;
+            while (s < fixed.size()) {
+                if (fixed[s] == '\\' && s + 1 < fixed.size()) {
+                    s += 2;  // 이스케이프 문자 건너뜀
+                    continue;
+                }
+                if (fixed[s] == '"') {
+                    normal_close = true;  // 정상 닫힘
+                    break;
+                }
+                // , " 패턴: 닫는 따옴표 없이 다음 키가 시작됨
+                if (fixed[s] == ',' && s + 1 < fixed.size()) {
+                    size_t next = s + 1;
+                    while (next < fixed.size() && fixed[next] == ' ') ++next;
+                    if (next < fixed.size() && fixed[next] == '"') {
+                        // 다음 키 시작 확인: "key": 패턴인지
+                        auto closing_q = fixed.find('"', next + 1);
+                        if (closing_q != std::string::npos) {
+                            auto after_q = closing_q + 1;
+                            while (after_q < fixed.size() && fixed[after_q] == ' ') ++after_q;
+                            if (after_q < fixed.size() && fixed[after_q] == ':') {
+                                // 확실히 다음 키-값 쌍 → 닫는 따옴표 삽입
+                                fixed.insert(s, 1, '"');
+                                did_fix = true;
+                                spdlog::info("[Signal] Fixed missing closing quote at pos {}", s);
+                                normal_close = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                ++s;
+            }
+            search_from = s + 1;
+        }
+
+        if (did_fix) {
+            spdlog::info("[Signal] Fixed JSON: {}", fixed.substr(0, 500));
+        }
+
+        j = json::parse(fixed, nullptr, false);
+        if (!j.is_discarded()) {
+            WebhookSignal sig;
+            sig.received_at = now_ns();
+            if (j.contains("algorithm") || j.contains("alert")) return parse_sfx(j, sig);
+            return parse_generic(j, sig);
+        }
+
+        spdlog::warn("[Signal] JSON parse failed after all attempts: {}", body.substr(0, 500));
+        return std::nullopt;
     }
 
     // -- 유효성 검사 --
