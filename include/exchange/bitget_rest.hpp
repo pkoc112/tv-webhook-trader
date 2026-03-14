@@ -119,13 +119,22 @@ public:
     // Returns true if placement succeeded (code "00000")
     bool place_tpsl(const std::string& symbol, const std::string& plan_type,
                     double trigger_price, double size, const std::string& hold_side) {
+        // 가격 정밀도 맞추기 (pricePlace)
+        int pp = 4;
+        auto cit = m_contracts.find(symbol);
+        if (cit != m_contracts.end()) {
+            pp = cit->second.price_place;
+        }
+        char price_buf[32];
+        std::snprintf(price_buf, sizeof(price_buf), "%.*f", pp, trigger_price);
+
         json body;
         body["symbol"]       = symbol;
         body["productType"]  = "USDT-FUTURES";
         body["marginMode"]   = "crossed";
         body["marginCoin"]   = "USDT";
         body["planType"]     = plan_type;
-        body["triggerPrice"]  = std::to_string(trigger_price);
+        body["triggerPrice"]  = std::string(price_buf);
         body["triggerType"]   = "mark_price";
         body["size"]          = std::to_string(size);
         body["holdSide"]      = hold_side;  // "long" or "short"
@@ -278,10 +287,12 @@ public:
         catch (...) { return json{}; }
     }
 
-    // -- 심볼별 계약 정보 캐시 (sizeMultiplier) --
+    // -- 심볼별 계약 정보 캐시 (sizeMultiplier + pricePlace) --
     struct ContractInfo {
         double size_multiplier{0.001};  // 최소 수량 단위
         double min_trade_num{0.001};    // 최소 주문 수량
+        int    price_place{4};          // 가격 소수점 자릿수
+        double price_end_step{1.0};     // 가격 최소 단위
     };
 
     // 외부에서 사전 로드된 계약 정보 주입
@@ -311,6 +322,8 @@ public:
                 ContractInfo ci;
                 ci.size_multiplier = std::stod(c.value("sizeMultiplier", "0.001"));
                 ci.min_trade_num = std::stod(c.value("minTradeNum", "0.001"));
+                ci.price_place = std::stoi(c.value("pricePlace", "4"));
+                ci.price_end_step = std::stod(c.value("priceEndStep", "1"));
                 m_contracts[sym] = ci;
                 ++count;
             }
