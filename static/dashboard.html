@@ -4,244 +4,982 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>C++ HFT Trader Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
 <style>
-* { margin:0; padding:0; box-sizing:border-box; }
-body { font-family: 'Segoe UI', monospace; background:#0a0a0f; color:#e0e0e0; padding:12px; }
-.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:12px; }
-.card { background:#14141f; border:1px solid #2a2a3a; border-radius:8px; padding:16px; }
-.card h3 { color:#8888ff; margin-bottom:10px; font-size:14px; }
-.stat { display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid #1a1a2a; }
-.stat .label { color:#888; }
-.stat .value { font-weight:bold; }
-.positive { color:#00ff88; }
-.negative { color:#ff4444; }
-.badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:bold; }
-.tier-S { background:#ffd700; color:#000; }
-.tier-A { background:#00cc66; color:#000; }
-.tier-B { background:#3399ff; color:#fff; }
-.tier-C { background:#666; color:#fff; }
-.tier-D { background:#cc3333; color:#fff; }
-.tier-X { background:#330000; color:#ff4444; }
-table { width:100%; border-collapse:collapse; font-size:12px; }
-th { background:#1a1a2f; color:#8888ff; padding:6px 8px; text-align:left; position:sticky; top:0; }
-td { padding:4px 8px; border-bottom:1px solid #1a1a2a; }
-tr:hover { background:#1a1a2f; }
-.header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
-.header h1 { color:#8888ff; font-size:20px; }
-.header .status { font-size:12px; }
-.shadow-badge { background:#ff8800; color:#000; padding:4px 12px; border-radius:4px; font-weight:bold; }
-.bar { height:6px; background:#1a1a2a; border-radius:3px; margin:4px 0; }
-.bar-fill { height:100%; border-radius:3px; transition:width 0.3s; }
-.scroll-table { max-height:400px; overflow-y:auto; }
-#positions-table, #scores-table { font-size:11px; }
+:root {
+    --bg-primary: #0a0e17;
+    --bg-secondary: #111827;
+    --bg-card: #1a2332;
+    --bg-card-hover: #1e2a3a;
+    --border: #2a3444;
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --green: #10b981;
+    --green-dim: #065f46;
+    --green-bg: rgba(16, 185, 129, 0.1);
+    --red: #ef4444;
+    --red-dim: #7f1d1d;
+    --red-bg: rgba(239, 68, 68, 0.1);
+    --blue: #3b82f6;
+    --blue-bg: rgba(59, 130, 246, 0.1);
+    --yellow: #f59e0b;
+    --yellow-bg: rgba(245, 158, 11, 0.1);
+    --purple: #a78bfa;
+    --orange: #f97316;
+    --gold: #fbbf24;
+    --cyan: #22d3ee;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: 'Noto Sans KR', sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #3a4a5e; }
+
+/* ---- Header ---- */
+.header {
+    background: rgba(17, 24, 39, 0.92);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    backdrop-filter: blur(16px);
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.header-left h1 {
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    background: linear-gradient(135deg, #3b82f6, #a78bfa);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.version-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, rgba(59,130,246,0.2), rgba(167,139,250,0.2));
+    color: var(--purple);
+    border: 1px solid rgba(167,139,250,0.3);
+}
+
+.shadow-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 4px;
+    background: rgba(249, 115, 22, 0.2);
+    color: var(--orange);
+    border: 1px solid rgba(249, 115, 22, 0.4);
+}
+
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    background: var(--green);
+    border-radius: 50%;
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.btn:hover { background: var(--bg-card-hover); color: var(--text-primary); }
+
+/* ---- Container ---- */
+.container {
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 20px 24px 40px;
+}
+
+/* ---- Stats Grid ---- */
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.stats-grid-4 {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    transition: border-color 0.2s, transform 0.15s;
+}
+.stat-card:hover { border-color: rgba(255,255,255,0.08); transform: translateY(-1px); }
+
+.stat-card .label {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+}
+
+.stat-card .value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 4px;
+}
+
+.stat-card .sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.positive { color: var(--green) !important; }
+.negative { color: var(--red) !important; }
+
+/* ---- Panel ---- */
+.panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 16px;
+}
+
+.panel-header {
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 13px;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+
+/* ---- Two Column Grid ---- */
+.two-col-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+/* ---- Table Styles ---- */
+.trade-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+}
+
+.trade-table th {
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 500;
+    color: var(--text-muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--bg-card);
+    z-index: 2;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.trade-table th:hover { color: var(--text-primary); }
+
+.trade-table th .sort-arrow {
+    font-size: 9px;
+    margin-left: 3px;
+    opacity: 0.4;
+}
+.trade-table th .sort-arrow.active { opacity: 1; color: var(--blue); }
+
+.trade-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(42, 52, 68, 0.4);
+    white-space: nowrap;
+}
+
+.trade-table tr:hover td { background: rgba(255, 255, 255, 0.015); }
+
+.table-scroll { max-height: 400px; overflow-y: auto; }
+.table-scroll-lg { max-height: 500px; overflow-y: auto; }
+
+/* ---- Badges ---- */
+.side-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+.side-badge.long { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-dim); }
+.side-badge.short { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-dim); }
+
+.tier-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+}
+
+.tier-S { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.3); }
+.tier-A { background: rgba(16,185,129,0.15); color: #10b981; border: 1px solid rgba(16,185,129,0.3); }
+.tier-B { background: rgba(59,130,246,0.15); color: #3b82f6; border: 1px solid rgba(59,130,246,0.3); }
+.tier-C { background: rgba(148,163,184,0.15); color: #94a3b8; border: 1px solid rgba(148,163,184,0.3); }
+.tier-D { background: rgba(249,115,22,0.15); color: #f97316; border: 1px solid rgba(249,115,22,0.3); }
+.tier-X { background: rgba(239,68,68,0.15); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
+
+.tf-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 3px;
+}
+.tf-badge.tf-1  { background: rgba(239,68,68,0.2); color: #f87171; }
+.tf-badge.tf-5  { background: rgba(245,158,11,0.2); color: #fbbf24; }
+.tf-badge.tf-15 { background: rgba(16,185,129,0.2); color: #34d399; }
+.tf-badge.tf-30 { background: rgba(59,130,246,0.2); color: #60a5fa; }
+.tf-badge.tf-60 { background: rgba(167,139,250,0.2); color: #a78bfa; }
+.tf-badge.tf-240 { background: rgba(236,72,153,0.2); color: #f472b6; }
+
+/* ---- Bar Chart rows ---- */
+.bar-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+.bar-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    min-width: 50px;
+    text-align: right;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+.bar-track {
+    flex: 1;
+    height: 22px;
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+}
+.bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.4s ease;
+    display: flex;
+    align-items: center;
+    padding-left: 8px;
+}
+.bar-fill span {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    color: white;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+}
+.bar-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    min-width: 60px;
+    text-align: right;
+    color: var(--text-muted);
+}
+
+/* ---- Info Row ---- */
+.info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(42,52,68,0.4);
+    font-size: 12px;
+}
+.info-row:last-child { border-bottom: none; }
+.info-row .info-label { color: var(--text-muted); }
+.info-row .info-value { font-family: 'JetBrains Mono', monospace; font-weight: 500; }
+
+/* ---- Search Input ---- */
+.search-input {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    outline: none;
+    width: 200px;
+}
+.search-input:focus { border-color: var(--blue); }
+.search-input::placeholder { color: var(--text-muted); }
+
+.empty-state {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 30px 16px;
+}
+
+/* ---- Responsive ---- */
+@media (max-width: 1200px) {
+    .stats-grid { grid-template-columns: repeat(3, 1fr); }
+    .stats-grid-4 { grid-template-columns: repeat(2, 1fr); }
+    .two-col-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 768px) {
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    .stats-grid-4 { grid-template-columns: 1fr; }
+    .header { flex-direction: column; gap: 8px; }
+    .container { padding: 12px; }
+}
 </style>
 </head>
 <body>
 
+<!-- ==================== HEADER ==================== -->
 <div class="header">
-  <h1>C++ HFT Trader</h1>
-  <div class="status">
-    <span id="shadow-badge" style="display:none" class="shadow-badge">SHADOW MODE</span>
-    <span id="last-update">--</span>
-  </div>
+    <div class="header-left">
+        <h1>C++ HFT Trader</h1>
+        <span class="version-badge">v3.0 LIVE</span>
+        <span id="shadowBadge" class="shadow-badge" style="display:none">SHADOW MODE</span>
+    </div>
+    <div class="header-right">
+        <div class="status-dot" id="statusDot"></div>
+        <span style="font-size:11px;color:var(--text-muted);font-family:'JetBrains Mono',monospace" id="lastUpdate">...</span>
+        <button class="btn" onclick="fetchAllData()">새로고침</button>
+    </div>
 </div>
 
-<div class="grid">
+<div class="container">
 
-  <!-- 거래 통계 -->
-  <div class="card">
-    <h3>Trading Stats</h3>
-    <div class="stat"><span class="label">Balance</span><span class="value" id="balance">--</span></div>
-    <div class="stat"><span class="label">Peak Balance</span><span class="value" id="peak-balance">--</span></div>
-    <div class="stat"><span class="label">Total PnL</span><span class="value" id="total-pnl">--</span></div>
-    <div class="stat"><span class="label">Total Trades</span><span class="value" id="total-trades">--</span></div>
-    <div class="stat"><span class="label">Win Rate</span><span class="value" id="win-rate">--</span></div>
-    <div class="stat"><span class="label">W / L</span><span class="value" id="wl">--</span></div>
-    <div class="stat"><span class="label">Orders Executed</span><span class="value" id="orders-exec">--</span></div>
-    <div class="stat"><span class="label">Risk Skips</span><span class="value" id="risk-skips">--</span></div>
-  </div>
-
-  <!-- 포트폴리오 리스크 -->
-  <div class="card">
-    <h3>Portfolio Risk</h3>
-    <div class="stat"><span class="label">Open Positions</span><span class="value" id="open-pos">--</span></div>
-    <div class="stat"><span class="label">Daily PnL</span><span class="value" id="daily-pnl">--</span></div>
-    <div class="stat"><span class="label">Weekly PnL</span><span class="value" id="weekly-pnl">--</span></div>
-    <div class="stat"><span class="label">Drawdown</span><span class="value" id="drawdown">--</span></div>
-    <div class="stat"><span class="label">Margin Used</span><span class="value" id="margin-used">--</span></div>
-    <div class="stat">
-      <span class="label">Margin %</span>
-      <span class="value"><div class="bar" style="width:100px;display:inline-block;vertical-align:middle"><div class="bar-fill" id="margin-bar" style="width:0%;background:#3399ff"></div></div> <span id="margin-pct">0%</span></span>
+<!-- ==================== MAIN STATS ROW (6 cards) ==================== -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="label">잔고 (USDT)</div>
+        <div class="value" id="balance">-</div>
+        <div class="sub" id="balanceChange">-</div>
     </div>
-    <div class="stat"><span class="label">Circuit Breaker</span><span class="value" id="cb-status">--</span></div>
-    <div class="stat"><span class="label">Check Pass Rate</span><span class="value" id="pass-rate">--</span></div>
-  </div>
-
-  <!-- TF 분포 -->
-  <div class="card">
-    <h3>Position Distribution</h3>
-    <div style="display:flex;gap:20px;">
-      <div style="flex:1">
-        <h4 style="color:#666;font-size:11px;margin-bottom:6px;">By Timeframe</h4>
-        <div id="tf-dist">--</div>
-      </div>
-      <div style="flex:1">
-        <h4 style="color:#666;font-size:11px;margin-bottom:6px;">By Tier</h4>
-        <div id="tier-dist">--</div>
-      </div>
+    <div class="stat-card">
+        <div class="label">총 손익</div>
+        <div class="value" id="totalPnl">-</div>
+        <div class="sub" id="totalPnlPct">-</div>
     </div>
-  </div>
-
-  <!-- 오픈 포지션 -->
-  <div class="card" style="grid-column: span 2;">
-    <h3>Open Positions (<span id="pos-count">0</span>)</h3>
-    <div class="scroll-table">
-      <table id="positions-table">
-        <thead><tr><th>Symbol</th><th>Side</th><th>TF</th><th>Entry</th><th>Size</th><th>Lev</th><th>Tier</th></tr></thead>
-        <tbody id="positions-body"></tbody>
-      </table>
+    <div class="stat-card">
+        <div class="label">승률</div>
+        <div class="value" id="winRate">-</div>
+        <div class="sub" id="winLoss">-</div>
     </div>
-  </div>
-
-  <!-- 심볼 스코어 -->
-  <div class="card" style="grid-column: span 2;">
-    <h3>Symbol Scores (<span id="score-count">0</span>)</h3>
-    <div class="scroll-table" style="max-height:500px;">
-      <table id="scores-table">
-        <thead><tr><th>Symbol</th><th>Tier</th><th>Score</th><th>Trades</th><th>WR%</th><th>PnL</th><th>PF</th><th>Exp</th></tr></thead>
-        <tbody id="scores-body"></tbody>
-      </table>
+    <div class="stat-card">
+        <div class="label">오픈 포지션</div>
+        <div class="value" id="openPositions">-</div>
+        <div class="sub" id="ordersExec">-</div>
     </div>
-  </div>
-
+    <div class="stat-card">
+        <div class="label">리스크 스킵</div>
+        <div class="value" id="riskSkips" style="color:var(--yellow)">-</div>
+        <div class="sub" id="passRate">-</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">총 거래 수</div>
+        <div class="value" id="totalTrades">-</div>
+        <div class="sub" id="peakBalance">-</div>
+    </div>
 </div>
+
+<!-- ==================== RISK STATUS ROW (4 cards) ==================== -->
+<div class="stats-grid-4">
+    <div class="stat-card" id="riskCard1">
+        <div class="label">포트폴리오 리스크</div>
+        <div class="value" id="riskStatus" style="font-size:16px">-</div>
+        <div class="sub" id="circuitBreaker">서킷 브레이커: OFF</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">일간 / 주간 손익</div>
+        <div class="value" id="dailyPnl" style="font-size:16px">-</div>
+        <div class="sub" id="weeklyPnl">주간: -</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">낙폭 / 마진</div>
+        <div class="value" id="drawdown" style="font-size:16px">-</div>
+        <div class="sub" id="marginInfo">마진: -</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">포지션 분포</div>
+        <div id="posDist" style="font-size:11px;line-height:1.8;font-family:'JetBrains Mono',monospace">-</div>
+    </div>
+</div>
+
+<!-- ==================== TWO COLUMN: TIER DIST + TF DIST ==================== -->
+<div class="two-col-grid">
+    <!-- Tier Distribution -->
+    <div class="panel">
+        <div class="panel-header">
+            <span>심볼 티어 분포</span>
+        </div>
+        <div style="padding:16px">
+            <div id="tierChart" style="min-height:80px">
+                <div class="empty-state">로딩 중...</div>
+            </div>
+            <table class="trade-table" style="margin-top:12px">
+                <thead>
+                    <tr><th>티어</th><th>심볼수</th><th>거래수</th><th>손익</th><th>평균점수</th></tr>
+                </thead>
+                <tbody id="tierTableBody">
+                    <tr><td colspan="5" class="empty-state">-</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- TF Distribution -->
+    <div class="panel">
+        <div class="panel-header">
+            <span>타임프레임별 포지션</span>
+        </div>
+        <div style="padding:16px">
+            <div id="tfBars">
+                <div class="empty-state">로딩 중...</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== OPEN POSITIONS TABLE ==================== -->
+<div class="panel">
+    <div class="panel-header">
+        <span>오픈 포지션</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px" id="positionCount">0</span>
+    </div>
+    <div class="table-scroll">
+        <table class="trade-table" id="positionsTable">
+            <thead>
+                <tr>
+                    <th onclick="sortTable('positionsTable',0,'num')"># <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('positionsTable',1,'str')">심볼 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('positionsTable',2,'str')">TF <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('positionsTable',3,'str')">방향 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('positionsTable',4,'num')">진입가 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('positionsTable',5,'num')">수량 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('positionsTable',6,'num')">레버리지 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('positionsTable',7,'str')">티어 <span class="sort-arrow">&#9650;</span></th>
+                </tr>
+            </thead>
+            <tbody id="positionsBody">
+                <tr><td colspan="8" class="empty-state">오픈 포지션 없음</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ==================== SYMBOL TIER DETAIL TABLE ==================== -->
+<div class="panel">
+    <div class="panel-header">
+        <span>심볼 티어 상세</span>
+        <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" class="search-input" id="symbolSearch" placeholder="심볼 검색..." oninput="filterSymbolTable()">
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px" id="scoreCount">0</span>
+        </div>
+    </div>
+    <div class="table-scroll-lg">
+        <table class="trade-table" id="symbolScoreTable">
+            <thead>
+                <tr>
+                    <th onclick="sortTable('symbolScoreTable',0,'num')">순위 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('symbolScoreTable',1,'str')">심볼 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('symbolScoreTable',2,'str')">티어 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('symbolScoreTable',3,'num')">점수 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('symbolScoreTable',4,'num')">거래수 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('symbolScoreTable',5,'num')">승률 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('symbolScoreTable',6,'num')">손익 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('symbolScoreTable',7,'num')">평균손익 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('symbolScoreTable',8,'num')">PF <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('symbolScoreTable',9,'num')">기대값 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('symbolScoreTable',10,'num')">사이즈배수 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('symbolScoreTable',11,'num')">최대레버 <span class="sort-arrow">&#9650;</span></th>
+                    <th onclick="sortTable('symbolScoreTable',12,'str')">REV <span class="sort-arrow">&#9650;</span></th>
+                </tr>
+            </thead>
+            <tbody id="symbolScoreBody">
+                <tr><td colspan="13" class="empty-state">거래 데이터 축적 중... (최소 20건 이상 필요)</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+</div><!-- /container -->
 
 <script>
-const BASE = '';
-const POLL_MS = 5000;
+// ============================================================
+//  GLOBALS
+// ============================================================
+let symbolScoresData = [];
 
-function pnlClass(v) { return v >= 0 ? 'positive' : 'negative'; }
-function fmt(v, d=2) { return v != null ? Number(v).toFixed(d) : '--'; }
+const TIER_COLORS = {
+    'S': '#fbbf24', 'A': '#10b981', 'B': '#3b82f6',
+    'C': '#94a3b8', 'D': '#f97316', 'X': '#ef4444'
+};
+
+const TIER_ORDER = ['S', 'A', 'B', 'C', 'D', 'X'];
+
+const TF_COLORS = {
+    '1': '#ef4444', '5': '#f59e0b', '15': '#10b981',
+    '30': '#3b82f6', '60': '#a78bfa', '240': '#ec4899'
+};
+
+// ============================================================
+//  UTILITY
+// ============================================================
+function fmt(n, dec = 2) {
+    if (n == null || isNaN(n)) return '-';
+    return Number(n).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+}
+
+function fmtPnl(n, dec = 2) {
+    if (n == null || isNaN(n)) return '-';
+    return (n >= 0 ? '+' : '') + fmt(n, dec);
+}
+
+function pnlClass(n) {
+    if (n == null || isNaN(n)) return '';
+    return n >= 0 ? 'positive' : 'negative';
+}
+
+const _kstFmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false
+});
+
+function kstNow() {
+    const d = new Date();
+    const p = {};
+    _kstFmt.formatToParts(d).forEach(t => {
+        if (t.type === 'year')   p.Y = t.value;
+        if (t.type === 'month')  p.M = t.value;
+        if (t.type === 'day')    p.D = t.value;
+        if (t.type === 'hour')   p.h = t.value;
+        if (t.type === 'minute') p.m = t.value;
+        if (t.type === 'second') p.s = t.value;
+    });
+    return p.Y + '-' + p.M + '-' + p.D + ' ' + p.h + ':' + p.m + ':' + p.s + ' KST';
+}
 
 async function fetchJson(url) {
-  try {
-    const r = await fetch(BASE + url);
-    if (!r.ok) return null;
-    return await r.json();
-  } catch { return null; }
+    try {
+        const r = await fetch(url);
+        if (!r.ok) return null;
+        return await r.json();
+    } catch { return null; }
 }
 
+// ============================================================
+//  TABLE SORT
+// ============================================================
+const sortStates = {};
+
+function sortTable(tableId, colIdx, type) {
+    const table = document.getElementById(tableId);
+    if (!table) return;
+    const tbody = table.querySelector('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    if (rows.length <= 1 && rows[0]?.querySelector('.empty-state')) return;
+
+    const key = tableId + '_' + colIdx;
+    sortStates[key] = sortStates[key] === 'asc' ? 'desc' : 'asc';
+    const asc = sortStates[key] === 'asc';
+
+    rows.sort((a, b) => {
+        let aVal = a.cells[colIdx]?.textContent?.trim() || '';
+        let bVal = b.cells[colIdx]?.textContent?.trim() || '';
+        if (type === 'num') {
+            aVal = parseFloat(aVal.replace(/[^0-9.\-]/g, '')) || 0;
+            bVal = parseFloat(bVal.replace(/[^0-9.\-]/g, '')) || 0;
+        } else {
+            aVal = aVal.toLowerCase();
+            bVal = bVal.toLowerCase();
+        }
+        if (aVal < bVal) return asc ? -1 : 1;
+        if (aVal > bVal) return asc ? 1 : -1;
+        return 0;
+    });
+
+    rows.forEach(r => tbody.appendChild(r));
+
+    const ths = table.querySelectorAll('th');
+    ths.forEach(th => {
+        const arrow = th.querySelector('.sort-arrow');
+        if (arrow) { arrow.classList.remove('active'); arrow.innerHTML = '&#9650;'; }
+    });
+    const activeArrow = ths[colIdx]?.querySelector('.sort-arrow');
+    if (activeArrow) {
+        activeArrow.classList.add('active');
+        activeArrow.innerHTML = asc ? '&#9650;' : '&#9660;';
+    }
+}
+
+// ============================================================
+//  SYMBOL SEARCH FILTER
+// ============================================================
+function filterSymbolTable() {
+    const query = document.getElementById('symbolSearch').value.toUpperCase();
+    const rows = document.querySelectorAll('#symbolScoreBody tr');
+    rows.forEach(row => {
+        const sym = row.cells?.[1]?.textContent || '';
+        row.style.display = sym.toUpperCase().includes(query) ? '' : 'none';
+    });
+}
+
+// ============================================================
+//  UPDATE: STATS
+// ============================================================
 async function updateStats() {
-  const d = await fetchJson('/api/stats');
-  if (!d) return;
-  document.getElementById('balance').textContent = '$' + fmt(d.balance);
-  document.getElementById('peak-balance').textContent = '$' + fmt(d.peak_balance);
-  const pnl = d.total_pnl;
-  const el = document.getElementById('total-pnl');
-  el.textContent = (pnl >= 0 ? '+' : '') + fmt(pnl, 4) + ' USDT';
-  el.className = 'value ' + pnlClass(pnl);
-  document.getElementById('total-trades').textContent = d.total_trades;
-  document.getElementById('win-rate').textContent = fmt(d.win_rate, 1) + '%';
-  document.getElementById('wl').textContent = d.wins + ' / ' + d.losses;
-  document.getElementById('orders-exec').textContent = d.orders_executed;
-  document.getElementById('risk-skips').textContent = d.risk_skips;
-  if (d.shadow_mode) document.getElementById('shadow-badge').style.display = '';
+    const d = await fetchJson('/api/stats');
+    if (!d) return;
+
+    // Balance
+    const bal = d.balance || 0;
+    document.getElementById('balance').textContent = fmt(bal);
+    const pnlPct = bal > 0 ? ((bal - 100) / 100 * 100) : 0;  // assume 100 USDT start
+    const changeEl = document.getElementById('balanceChange');
+    changeEl.textContent = fmtPnl(pnlPct, 2) + '%';
+    changeEl.className = 'sub ' + pnlClass(pnlPct);
+
+    // Total PnL
+    const pnl = d.total_pnl || 0;
+    const pnlEl = document.getElementById('totalPnl');
+    pnlEl.textContent = fmtPnl(pnl, 4);
+    pnlEl.className = 'value ' + pnlClass(pnl);
+    const pctEl = document.getElementById('totalPnlPct');
+    pctEl.textContent = fmtPnl(pnlPct, 2) + '% ROI';
+    pctEl.className = 'sub ' + pnlClass(pnl);
+
+    // Win Rate
+    const wr = d.win_rate || 0;
+    const wrEl = document.getElementById('winRate');
+    wrEl.textContent = fmt(wr, 1) + '%';
+    wrEl.className = 'value ' + (wr >= 50 ? 'positive' : wr > 0 ? 'negative' : '');
+    document.getElementById('winLoss').textContent = (d.wins || 0) + 'W / ' + (d.losses || 0) + 'L';
+
+    // Open Positions
+    document.getElementById('openPositions').textContent = d.open_positions || 0;
+    document.getElementById('ordersExec').textContent = '주문: ' + (d.orders_executed || 0) + '건';
+
+    // Risk Skips
+    document.getElementById('riskSkips').textContent = d.risk_skips || 0;
+
+    // Total Trades
+    document.getElementById('totalTrades').textContent = d.total_trades || 0;
+    document.getElementById('peakBalance').textContent = 'Peak: ' + fmt(d.peak_balance);
+
+    // Shadow mode
+    if (d.shadow_mode) document.getElementById('shadowBadge').style.display = '';
 }
 
+// ============================================================
+//  UPDATE: RISK STATUS
+// ============================================================
 async function updateRisk() {
-  const d = await fetchJson('/api/risk/status');
-  if (!d) return;
-  const p = d.portfolio || {};
-  document.getElementById('open-pos').textContent = p.total_positions || 0;
+    const d = await fetchJson('/api/risk/status');
+    if (!d) return;
+    const p = d.portfolio || {};
+    const cs = d.check_stats || {};
 
-  const dp = document.getElementById('daily-pnl');
-  dp.textContent = (p.daily_pnl >= 0 ? '+' : '') + fmt(p.daily_pnl, 4);
-  dp.className = 'value ' + pnlClass(p.daily_pnl);
+    // Risk status
+    const statusEl = document.getElementById('riskStatus');
+    const cbEl = document.getElementById('circuitBreaker');
+    const card1 = document.getElementById('riskCard1');
+    if (p.circuit_breaker_active) {
+        statusEl.innerHTML = '<span style="color:var(--red)">서킷 브레이커 발동</span>';
+        cbEl.textContent = '서킷 브레이커: ON';
+        cbEl.style.color = 'var(--red)';
+        card1.style.borderColor = 'var(--red)';
+    } else {
+        statusEl.innerHTML = '<span style="color:var(--green)">정상</span>';
+        cbEl.textContent = '서킷 브레이커: OFF';
+        cbEl.style.color = '';
+        card1.style.borderColor = '';
+    }
 
-  const wp = document.getElementById('weekly-pnl');
-  wp.textContent = (p.weekly_pnl >= 0 ? '+' : '') + fmt(p.weekly_pnl, 4);
-  wp.className = 'value ' + pnlClass(p.weekly_pnl);
+    // Pass Rate
+    document.getElementById('passRate').textContent =
+        'Pass: ' + fmt(cs.pass_rate, 1) + '% (' + (cs.passed||0) + '/' + (cs.total_checks||0) + ')';
 
-  document.getElementById('drawdown').textContent = fmt(p.current_drawdown_pct, 2) + '%';
-  document.getElementById('margin-used').textContent = '$' + fmt(p.total_margin_used);
-  document.getElementById('margin-pct').textContent = fmt(p.margin_used_pct, 1) + '%';
-  document.getElementById('margin-bar').style.width = Math.min(p.margin_used_pct || 0, 100) + '%';
-  document.getElementById('margin-bar').style.background =
-    (p.margin_used_pct > 80) ? '#ff4444' : (p.margin_used_pct > 50) ? '#ff8800' : '#3399ff';
+    // Daily / Weekly PnL
+    const dp = p.daily_pnl || 0;
+    const dpEl = document.getElementById('dailyPnl');
+    dpEl.textContent = '일간: ' + fmtPnl(dp, 4);
+    dpEl.className = 'value ' + pnlClass(dp);
+    const wp = p.weekly_pnl || 0;
+    document.getElementById('weeklyPnl').textContent = '주간: ' + fmtPnl(wp, 4);
+    document.getElementById('weeklyPnl').className = 'sub ' + pnlClass(wp);
 
-  document.getElementById('cb-status').innerHTML =
-    p.circuit_breaker_active ? '<span style="color:#ff4444">ACTIVE</span>' : '<span style="color:#00ff88">OFF</span>';
+    // Drawdown + Margin
+    document.getElementById('drawdown').textContent = fmt(p.current_drawdown_pct, 2) + '%';
+    document.getElementById('drawdown').className = 'value ' + (p.current_drawdown_pct > 3 ? 'negative' : '');
+    const marginPct = p.margin_used_pct || 0;
+    document.getElementById('marginInfo').textContent =
+        '마진: $' + fmt(p.total_margin_used) + ' (' + fmt(marginPct, 1) + '%)';
 
-  const cs = d.check_stats || {};
-  document.getElementById('pass-rate').textContent =
-    fmt(cs.pass_rate, 1) + '% (' + (cs.passed||0) + '/' + (cs.total_checks||0) + ')';
+    // Position Distribution by TF
+    const tfDist = p.positions_by_tf || {};
+    let distHtml = '';
+    const sortedTFs = Object.entries(tfDist).sort((a, b) => parseInt(a[0]) - parseInt(b[0]));
+    for (const [tf, cnt] of sortedTFs) {
+        const color = TF_COLORS[tf] || '#94a3b8';
+        distHtml += `<span class="tf-badge tf-${tf}">${tf}m: ${cnt}</span> `;
+    }
+    document.getElementById('posDist').innerHTML = distHtml || '<span style="color:var(--text-muted)">-</span>';
 
-  // TF / Tier 분포
-  const tfDist = p.positions_by_tf || {};
-  let tfHtml = '';
-  for (const [tf, cnt] of Object.entries(tfDist).sort()) {
-    tfHtml += `<div class="stat"><span class="label">${tf}m</span><span class="value">${cnt}</span></div>`;
-  }
-  document.getElementById('tf-dist').innerHTML = tfHtml || '<span style="color:#444">No positions</span>';
-
-  // Tier dist from positions
-  const positions = await fetchJson('/api/positions');
-  const tierCnt = {};
-  if (positions) {
-    positions.forEach(p => { tierCnt[p.tier||'?'] = (tierCnt[p.tier||'?']||0) + 1; });
-  }
-  let tierHtml = '';
-  for (const [t, c] of Object.entries(tierCnt).sort()) {
-    tierHtml += `<div class="stat"><span class="label"><span class="badge tier-${t}">${t}</span></span><span class="value">${c}</span></div>`;
-  }
-  document.getElementById('tier-dist').innerHTML = tierHtml || '<span style="color:#444">No positions</span>';
+    // TF bar chart
+    updateTFBars(tfDist);
 }
 
+// ============================================================
+//  TF BAR CHART
+// ============================================================
+function updateTFBars(tfDist) {
+    const container = document.getElementById('tfBars');
+    const entries = Object.entries(tfDist).sort((a, b) => parseInt(a[0]) - parseInt(b[0]));
+    if (entries.length === 0) {
+        container.innerHTML = '<div class="empty-state">포지션 없음</div>';
+        return;
+    }
+    const maxVal = Math.max(...entries.map(e => e[1]), 1);
+    let html = '';
+    for (const [tf, cnt] of entries) {
+        const pct = (cnt / maxVal * 100).toFixed(0);
+        const color = TF_COLORS[tf] || '#94a3b8';
+        html += `<div class="bar-row">
+            <div class="bar-label">${tf}m</div>
+            <div class="bar-track">
+                <div class="bar-fill" style="width:${pct}%;background:${color}">
+                    <span>${cnt}</span>
+                </div>
+            </div>
+        </div>`;
+    }
+    container.innerHTML = html;
+}
+
+// ============================================================
+//  UPDATE: POSITIONS TABLE
+// ============================================================
 async function updatePositions() {
-  const d = await fetchJson('/api/positions');
-  if (!d) return;
-  document.getElementById('pos-count').textContent = d.length;
-  const tbody = document.getElementById('positions-body');
-  tbody.innerHTML = d.map(p => `<tr>
-    <td>${p.symbol}</td>
-    <td style="color:${p.side==='long'?'#00ff88':'#ff4444'}">${p.side}</td>
-    <td>${p.timeframe||'-'}m</td>
-    <td>${fmt(p.entry_price, p.entry_price > 100 ? 2 : 6)}</td>
-    <td>${fmt(p.quantity, 6)}</td>
-    <td>${p.leverage}x</td>
-    <td><span class="badge tier-${p.tier}">${p.tier}</span></td>
-  </tr>`).join('');
+    const d = await fetchJson('/api/positions');
+    if (!d) return;
+    document.getElementById('positionCount').textContent = d.length;
+    const tbody = document.getElementById('positionsBody');
+    if (d.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-state">오픈 포지션 없음</td></tr>';
+        return;
+    }
+    tbody.innerHTML = d.map((p, i) => {
+        const ep = p.entry_price;
+        const epFmt = ep > 1000 ? fmt(ep, 2) : ep > 1 ? fmt(ep, 4) : fmt(ep, 6);
+        return `<tr>
+            <td>${i + 1}</td>
+            <td style="font-weight:600">${(p.symbol || '').replace('USDT', '')}</td>
+            <td><span class="tf-badge tf-${p.timeframe||''}">${p.timeframe||'-'}m</span></td>
+            <td><span class="side-badge ${p.side}">${p.side}</span></td>
+            <td>${epFmt}</td>
+            <td>${fmt(p.quantity, 6)}</td>
+            <td>${p.leverage}x</td>
+            <td><span class="tier-badge tier-${p.tier}">${p.tier}</span></td>
+        </tr>`;
+    }).join('');
 }
 
+// ============================================================
+//  UPDATE: SYMBOL SCORES + TIER DISTRIBUTION
+// ============================================================
 async function updateScores() {
-  const d = await fetchJson('/api/symbols/scores');
-  if (!d || !d.length) return;
-  document.getElementById('score-count').textContent = d.length;
-  const tbody = document.getElementById('scores-body');
-  tbody.innerHTML = d.slice(0, 100).map(s => `<tr>
-    <td>${s.symbol}</td>
-    <td><span class="badge tier-${s.tier}">${s.tier}</span></td>
-    <td>${fmt(s.composite_score, 1)}</td>
-    <td>${s.total_trades}</td>
-    <td>${fmt(s.win_rate * 100, 1)}</td>
-    <td class="${pnlClass(s.total_pnl)}">${fmt(s.total_pnl, 4)}</td>
-    <td>${fmt(s.profit_factor, 2)}</td>
-    <td>${fmt(s.expectancy, 4)}</td>
-  </tr>`).join('');
+    const d = await fetchJson('/api/symbols/scores');
+    symbolScoresData = Array.isArray(d) ? d : (d?.scores || d?.symbols || []);
+
+    document.getElementById('scoreCount').textContent = symbolScoresData.length;
+
+    // Tier distribution
+    updateTierDistribution();
+
+    // Symbol score table
+    updateSymbolScoreTable();
 }
 
-async function poll() {
-  await Promise.all([updateStats(), updateRisk(), updatePositions()]);
-  document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+function updateTierDistribution() {
+    const tierGroups = {};
+    TIER_ORDER.forEach(t => tierGroups[t] = { count: 0, trades: 0, pnl: 0, scoreSum: 0 });
+
+    symbolScoresData.forEach(s => {
+        const t = s.tier || 'C';
+        if (!tierGroups[t]) tierGroups[t] = { count: 0, trades: 0, pnl: 0, scoreSum: 0 };
+        tierGroups[t].count++;
+        tierGroups[t].trades += s.total_trades || 0;
+        tierGroups[t].pnl += s.total_pnl || 0;
+        tierGroups[t].scoreSum += s.composite_score || 0;
+    });
+
+    // Tier chart (horizontal bars)
+    const total = symbolScoresData.length || 1;
+    let chartHtml = '';
+    TIER_ORDER.forEach(t => {
+        const g = tierGroups[t];
+        if (g.count === 0) return;
+        const pct = (g.count / total * 100).toFixed(0);
+        const color = TIER_COLORS[t];
+        chartHtml += `<div class="bar-row">
+            <div class="bar-label"><span class="tier-badge tier-${t}">${t}</span></div>
+            <div class="bar-track">
+                <div class="bar-fill" style="width:${pct}%;background:${color}">
+                    <span>${g.count} (${pct}%)</span>
+                </div>
+            </div>
+        </div>`;
+    });
+    document.getElementById('tierChart').innerHTML = chartHtml || '<div class="empty-state">데이터 없음</div>';
+
+    // Tier table
+    const tbody = document.getElementById('tierTableBody');
+    let tableHtml = '';
+    TIER_ORDER.forEach(t => {
+        const g = tierGroups[t];
+        if (g.count === 0) return;
+        const avgScore = g.count > 0 ? (g.scoreSum / g.count) : 0;
+        tableHtml += `<tr>
+            <td><span class="tier-badge tier-${t}">${t}</span></td>
+            <td>${g.count}</td>
+            <td>${g.trades}</td>
+            <td class="${pnlClass(g.pnl)}">${fmtPnl(g.pnl, 4)}</td>
+            <td>${fmt(avgScore, 1)}</td>
+        </tr>`;
+    });
+    tbody.innerHTML = tableHtml || '<tr><td colspan="5" class="empty-state">데이터 없음</td></tr>';
 }
 
-// 스코어는 덜 자주
-async function pollScores() { await updateScores(); }
+function updateSymbolScoreTable() {
+    const tbody = document.getElementById('symbolScoreBody');
+    if (symbolScoresData.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="13" class="empty-state">거래 데이터 축적 중... (최소 20건 이상 필요)</td></tr>';
+        return;
+    }
 
-poll();
-pollScores();
-setInterval(poll, POLL_MS);
-setInterval(pollScores, 30000);
+    tbody.innerHTML = symbolScoresData.map((s, i) => {
+        const wr = s.win_rate != null ? (s.win_rate > 1 ? s.win_rate : s.win_rate * 100) : 0;
+        const revWr = s.rev_win_rate != null ? (s.rev_win_rate > 1 ? s.rev_win_rate : s.rev_win_rate * 100) : 0;
+        const revAllowed = s.rev_allowed;
+        let revHtml = '-';
+        if (s.rev_trades > 0) {
+            revHtml = revAllowed
+                ? `<span style="color:var(--green)">O</span> <span style="color:var(--text-muted)">(${s.rev_trades}/${fmt(revWr,0)}%)</span>`
+                : `<span style="color:var(--red)">X</span> <span style="color:var(--text-muted)">(${s.rev_trades}/${fmt(revWr,0)}%)</span>`;
+        }
+
+        return `<tr>
+            <td style="color:var(--text-muted)">${i + 1}</td>
+            <td style="font-weight:600">${(s.symbol || '').replace('USDT', '')}</td>
+            <td><span class="tier-badge tier-${s.tier}">${s.tier}</span></td>
+            <td>${fmt(s.composite_score, 1)}</td>
+            <td>${s.total_trades || 0}</td>
+            <td>${fmt(wr, 1)}%</td>
+            <td class="${pnlClass(s.total_pnl)}">${fmtPnl(s.total_pnl, 4)}</td>
+            <td class="${pnlClass(s.avg_pnl)}">${fmtPnl(s.avg_pnl, 4)}</td>
+            <td>${fmt(s.profit_factor, 2)}</td>
+            <td class="${pnlClass(s.expectancy)}">${fmtPnl(s.expectancy, 4)}</td>
+            <td>${fmt(s.size_multiplier, 2)}x</td>
+            <td>${s.max_leverage || '-'}x</td>
+            <td>${revHtml}</td>
+        </tr>`;
+    }).join('');
+}
+
+// ============================================================
+//  FETCH ALL + POLLING
+// ============================================================
+async function fetchAllData() {
+    await Promise.all([updateStats(), updateRisk(), updatePositions()]);
+    document.getElementById('lastUpdate').textContent = kstNow();
+    document.getElementById('statusDot').style.background = 'var(--green)';
+    // Scores are slower, fetch separately
+    updateScores();
+}
+
+// Initial load
+fetchAllData();
+
+// Polling: main data every 5s, scores every 30s
+setInterval(async () => {
+    await Promise.all([updateStats(), updateRisk(), updatePositions()]);
+    document.getElementById('lastUpdate').textContent = kstNow();
+}, 5000);
+
+setInterval(() => { updateScores(); }, 30000);
+
 </script>
 </body>
 </html>
