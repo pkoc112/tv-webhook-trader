@@ -1,13 +1,14 @@
 // ============================================================================
 // exchange/bitget_ws.hpp -- Bitget V2 WebSocket Private 클라이언트
-// v1.0 | 2026-03-14 | 실시간 잔고/포지션/체결 수신
+// v1.1 | 2026-03-14 | 실시간 잔고/포지션/체결 수신
 //
 // 기능:
 //   - TLS WebSocket 연결 (wss://ws.bitget.com/v2/ws/private)
 //   - HMAC-SHA256 로그인 인증
 //   - account, positions, orders 채널 구독
-//   - Ping/Pong 자동 유지
-//   - 자동 재연결 (최대 5회)
+//   - Ping/Pong 자동 유지 + 헬스체크 (10초 pong 타임아웃)
+//   - 무제한 자동 재연결 (지수 백오프, 최대 60초)
+//   - 재연결 시 자동 재인증 + 채널 재구독
 //   - 콜백을 통한 실시간 업데이트
 // ============================================================================
 #pragma once
@@ -111,35 +112,43 @@ private:
     static constexpr const char* WS_HOST = "ws.bitget.com";
     static constexpr const char* WS_PORT = "443";
     static constexpr const char* WS_PATH = "/v2/ws/private";
-    static constexpr int MAX_RECONNECT = 5;
     static constexpr int PING_INTERVAL_SEC = 25;
+    static constexpr int PONG_TIMEOUT_SEC = 10;
+    static constexpr int BACKOFF_INITIAL_SEC = 1;
+    static constexpr int BACKOFF_MAX_SEC = 60;
 
     void run_loop() {
         int reconnect_count = 0;
+        int backoff_sec = BACKOFF_INITIAL_SEC;
 
         while (m_running.load()) {
             try {
                 connect_and_run();
-                // 정상 종료 (m_running = false)
+                // 정상 종료 (m_running = false) -- 백오프 리셋
                 reconnect_count = 0;
+                backoff_sec = BACKOFF_INITIAL_SEC;
             } catch (const std::exception& e) {
-                m_connected.store(false);
+                bool was_connected = m_connected.exchange(false);
                 if (!m_running.load()) break;
 
-                ++reconnect_count;
-                if (reconnect_count > MAX_RECONNECT) {
-                    spdlog::error("[WS] Max reconnect attempts reached, giving up");
-                    break;
+                // 연결 성공 후 끊긴 경우 백오프 리셋 (24시간 자동 끊김 등)
+                if (was_connected) {
+                    backoff_sec = BACKOFF_INITIAL_SEC;
+                    reconnect_count = 0;
+                    spdlog::info("[WS] Was connected -- backoff reset to {}s", backoff_sec);
                 }
 
-                int delay = std::min(reconnect_count * 2, 30);
-                spdlog::warn("[WS] Disconnected: {} | Reconnect {}/{} in {}s",
-                    e.what(), reconnect_count, MAX_RECONNECT, delay);
+                ++reconnect_count;
+                spdlog::warn("[WS] Disconnected: {} | Reconnect attempt #{} in {}s",
+                    e.what(), reconnect_count, backoff_sec);
 
                 // 재연결 대기 (중간에 stop 가능하도록 1초씩)
-                for (int i = 0; i < delay && m_running.load(); ++i) {
+                for (int i = 0; i < backoff_sec && m_running.load(); ++i) {
                     std::this_thread::sleep_for(std::chrono::seconds(1));
                 }
+
+                // 지수 백오프: 1 -> 2 -> 4 -> 8 -> 16 -> 32 -> 60 -> 60 ...
+                backoff_sec = std::min(backoff_sec * 2, BACKOFF_MAX_SEC);
             }
         }
         m_connected.store(false);
@@ -200,17 +209,34 @@ private:
         spdlog::info("[WS] Subscribed: {}", sub_resp.value("event", "unknown"));
 
         m_connected.store(true);
+        spdlog::info("[WS] Fully authenticated and subscribed -- resetting backoff");
 
         // 메시지 수신 루프
         auto last_ping = std::chrono::steady_clock::now();
+        auto last_pong = std::chrono::steady_clock::now();
+        bool pong_pending = false;
 
         while (m_running.load()) {
-            // Ping 주기 체크
             auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_ping).count();
-            if (elapsed >= PING_INTERVAL_SEC) {
+
+            // Ping 주기 체크
+            auto ping_elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_ping).count();
+            if (ping_elapsed >= PING_INTERVAL_SEC) {
                 ws.write(net::buffer(std::string("ping")));
                 last_ping = now;
+                if (!pong_pending) {
+                    pong_pending = true;
+                }
+            }
+
+            // Pong 헬스체크: pong을 기다리는 중인데 PONG_TIMEOUT_SEC 초과 시 강제 재연결
+            if (pong_pending) {
+                auto pong_wait = std::chrono::duration_cast<std::chrono::seconds>(now - last_ping).count();
+                if (pong_wait >= PONG_TIMEOUT_SEC) {
+                    spdlog::error("[WS] No pong received within {}s -- forcing reconnect", PONG_TIMEOUT_SEC);
+                    throw std::runtime_error("Pong timeout: no response within " +
+                        std::to_string(PONG_TIMEOUT_SEC) + "s");
+                }
             }
 
             // 논블로킹 읽기 (타임아웃 설정)
@@ -229,8 +255,12 @@ private:
             auto msg = beast::buffers_to_string(buf.data());
             buf.clear();
 
-            // pong 응답 무시
-            if (msg == "pong") continue;
+            // pong 응답 처리 -- 헬스체크 리셋
+            if (msg == "pong") {
+                pong_pending = false;
+                last_pong = now;
+                continue;
+            }
 
             // JSON 파싱 및 처리
             try {

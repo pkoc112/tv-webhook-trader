@@ -210,6 +210,9 @@ private:
         // 실제 Bitget 잔고 조회
         fetch_real_balance(rest);
 
+        // 거래소 포지션과 동기화 (ghost position 제거)
+        sync_positions_with_exchange(rest);
+
         // 심볼별 계약 정보 (sizeMultiplier) 로드
         rest.fetch_contracts();
         m_contracts = rest.get_contracts_cache();
@@ -269,6 +272,82 @@ private:
             }
         } catch (const std::exception& e) {
             spdlog::error("[Exec] Balance fetch error: {}", e.what());
+        }
+    }
+
+    // -- 거래소 포지션 동기화: ghost position 제거 --
+    void sync_positions_with_exchange(BitgetRestClient& rest) {
+        std::lock_guard lock(m_pos_mtx);
+
+        if (m_positions.empty()) {
+            spdlog::info("[Sync] No internal positions to reconcile");
+            return;
+        }
+
+        try {
+            auto resp = rest.get_positions();
+            auto code = resp.value("code", "99999");
+            if (code != "00000") {
+                spdlog::error("[Sync] Failed to fetch exchange positions: code={} msg={}",
+                    code, resp.value("msg", "unknown"));
+                return;
+            }
+
+            // Build a set of (symbol, holdSide) pairs that are actually open on Bitget
+            // Bitget returns holdSide as "long" or "short", and total > 0 means open
+            std::unordered_set<std::string> exchange_open;  // "BTCUSDT:long", "ETHUSDT:short", etc.
+
+            if (resp.contains("data") && resp["data"].is_array()) {
+                for (auto& pos : resp["data"]) {
+                    std::string sym = pos.value("symbol", "");
+                    std::string hold_side = pos.value("holdSide", "");
+                    double total = 0.0;
+                    if (pos.contains("total")) {
+                        auto& tv = pos["total"];
+                        if (tv.is_string()) {
+                            try { total = std::stod(tv.get<std::string>()); } catch (...) {}
+                        } else if (tv.is_number()) {
+                            total = tv.get<double>();
+                        }
+                    }
+
+                    if (!sym.empty() && total > 0) {
+                        exchange_open.insert(sym + ":" + hold_side);
+                    }
+                }
+            }
+
+            spdlog::info("[Sync] Exchange has {} open position(s), internal has {}",
+                exchange_open.size(), m_positions.size());
+
+            // Find internal positions that are no longer on the exchange
+            std::vector<std::string> to_remove;
+            for (auto& [key, pos] : m_positions) {
+                std::string lookup = pos.symbol + ":" + pos.side;
+                if (exchange_open.find(lookup) == exchange_open.end()) {
+                    to_remove.push_back(key);
+                    spdlog::warn("[Sync] Ghost position removed: key={} symbol={} side={} entry={:.2f} qty={:.6f}",
+                        key, pos.symbol, pos.side, pos.entry_price, pos.quantity);
+                }
+            }
+
+            // Remove ghost positions
+            for (auto& key : to_remove) {
+                m_positions.erase(key);
+            }
+
+            if (to_remove.empty()) {
+                spdlog::info("[Sync] All {} internal position(s) confirmed on exchange", m_positions.size());
+            } else {
+                spdlog::info("[Sync] Reconciliation complete: removed {} ghost position(s), {} remaining",
+                    to_remove.size(), m_positions.size());
+
+                // Save state immediately after removing ghost positions
+                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+            }
+
+        } catch (const std::exception& e) {
+            spdlog::error("[Sync] Position sync error: {}", e.what());
         }
     }
 

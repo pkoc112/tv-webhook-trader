@@ -164,30 +164,32 @@ public:
                 "TF " + tf + "m limit: " + std::to_string(tf_count) + "/" + std::to_string(tf_limit));
         }
 
-        // 4. TF별 노출 배분
-        double tf_exposure = 0.0;
+        // 4. TF별 노출 배분 (마진 기반)
+        double tf_margin = 0.0;
         for (auto& [_, p] : positions) {
             if (p.timeframe == tf)
-                tf_exposure += std::abs(p.entry_price * p.quantity * p.leverage);
+                tf_margin += std::abs(p.entry_price * p.quantity) / p.leverage;
         }
-        double new_notional = price * qty * leverage;
+        double new_margin = price * qty / leverage;
         double tf_exp_pct = 30.0;
         auto eit = m_tf_exposure_pct.find(tf);
         if (eit != m_tf_exposure_pct.end()) tf_exp_pct = eit->second;
-        double tf_max = balance * (tf_exp_pct / 100.0) * leverage;
+        double tf_max = balance * (tf_exp_pct / 100.0);
 
-        if (tf_exposure + new_notional > tf_max) {
+        if (tf_margin + new_margin > tf_max) {
             return block("tf_exposure",
-                "TF " + tf + "m exposure: " + fmt0(tf_exposure + new_notional) + "/" + fmt0(tf_max));
+                "TF " + tf + "m margin: " + fmt0(tf_margin + new_margin) + "/" + fmt0(tf_max));
         }
 
-        // 5. 상관관계 리스크
-        double total_notional = 0.0;
+        // 5. 상관관계 리스크 (마진 기반)
+        // corr_risk와 corr_limit 모두 마진(entry * qty / leverage) 기준으로 비교
+        double total_margin_risk = 0.0;
         for (auto& [_, p] : positions) {
-            total_notional += std::abs(p.entry_price * p.quantity * p.leverage);
+            total_margin_risk += std::abs(p.entry_price * p.quantity) / p.leverage;
         }
-        double corr_risk = (total_notional + new_notional) * m_corr_factor;
-        double corr_limit = balance * (m_max_corr_risk_pct / 100.0) * leverage;
+        double new_margin_risk = price * qty / leverage;
+        double corr_risk = (total_margin_risk + new_margin_risk) * m_corr_factor;
+        double corr_limit = balance * (m_max_corr_risk_pct / 100.0);
         if (corr_risk > corr_limit) {
             return block("correlation_risk",
                 "Correlated risk: " + fmt0(corr_risk) + "/" + fmt0(corr_limit));
@@ -231,7 +233,7 @@ public:
 
         state.margin_used_pct = balance > 0
             ? std::round(state.total_margin_used / balance * 1000.0) / 10.0 : 0;
-        state.correlated_risk = state.total_notional * m_corr_factor;
+        state.correlated_risk = state.total_margin_used * m_corr_factor;
         state.correlated_risk_pct = balance > 0
             ? std::round(state.correlated_risk / balance * 1000.0) / 10.0 : 0;
 

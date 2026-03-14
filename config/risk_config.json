@@ -62,7 +62,7 @@
     "portfolio_risk": {
         "max_positions_total": 50,
         "max_positions_per_tf": {
-            "1": 5, "5": 8, "15": 6, "30": 4, "60": 3, "240": 2
+            "1": 10, "5": 12, "15": 10, "30": 8, "60": 6, "240": 4
         },
         "tf_exposure_pct": {
             "1": 10, "5": 25, "15": 25, "30": 20, "60": 15, "240": 10
@@ -77,11 +77,11 @@
     },
 
     "tf_filters": {
-        "1":   {"size_multiplier": 0.35, "min_tier": "A", "min_tp_to_cost_ratio": 3.0, "block_reverse": true},
-        "5":   {"size_multiplier": 0.65, "min_tier": "B", "min_tp_to_cost_ratio": 2.5, "block_reverse": true},
-        "15":  {"size_multiplier": 1.0,  "min_tier": "C", "min_tp_to_cost_ratio": 2.0, "block_reverse": true},
-        "30":  {"size_multiplier": 1.0,  "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": true},
-        "60":  {"size_multiplier": 1.0,  "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": true},
-        "240": {"size_multiplier": 1.0,  "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": true}
+        "1":   {"size_multiplier": 0.35, "min_tier": "C", "min_tp_to_cost_ratio": 2.5, "block_reverse": true},
+        "5":   {"size_multiplier": 0.65, "min_tier": "C", "min_tp_to_cost_ratio": 2.0, "block_reverse": true},
+        "15":  {"size_multiplier": 1.0,  "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": true},
+        "30":  {"size_multiplier": 1.0,  "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": false},
+        "60":  {"size_multiplier": 1.0,  "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": false},
+        "240": {"size_multiplier": 1.0,  "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": false}
     }
 }
