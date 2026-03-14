@@ -80,22 +80,31 @@ print("3. PENDING TRIGGER ORDERS (TP/SL)")
 print("=" * 60)
 all_trigger_orders = []
 try:
-    # Try multiple planType values and unfiltered
-    for plan_type in ['profit_loss', 'normal_plan', 'pos_profit', 'pos_loss', None]:
+    # Paginate through all trigger orders with planType=profit_loss
+    last_end_id = ''
+    page = 0
+    while True:
         try:
-            path = '/api/v2/mix/order/orders-plan-pending?productType=USDT-FUTURES&limit=100'
-            if plan_type:
-                path += f'&planType={plan_type}'
+            page += 1
+            path = '/api/v2/mix/order/orders-plan-pending?productType=USDT-FUTURES&planType=profit_loss&limit=100'
+            if last_end_id:
+                path += f'&idLessThan={last_end_id}'
             resp = api_get(path)
             if resp.get('code') == '00000':
                 data = resp.get('data', {})
-                ords = data.get('entrustedList', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-                if ords:
-                    all_trigger_orders.extend(ords)
-                    label = plan_type or 'all'
-                    print(f"   Found {len(ords)} orders ({label})")
+                ords = data.get('entrustedList', []) if isinstance(data, dict) else []
+                if not ords:
+                    break
+                all_trigger_orders.extend(ords)
+                print(f"   Page {page}: {len(ords)} orders")
+                last_end_id = data.get('endId', '') if isinstance(data, dict) else ''
+                if not last_end_id or len(ords) < 100:
+                    break
+            else:
+                break
         except Exception as e:
-            pass  # silently skip failed queries
+            print(f"   Warning: page {page} failed: {e}")
+            break
         time.sleep(0.12)
 
     print(f"   Total pending trigger orders: {len(all_trigger_orders)}")
@@ -113,19 +122,17 @@ print("\n" + "=" * 60)
 print("4. TP/SL PROTECTION CHECK (preset + trigger orders)")
 print("=" * 60)
 try:
-    # Build trigger order map
-    trigger_map = {}  # "BTCUSDT_long" → {"tp": bool, "sl": bool}
+    # Build trigger order map — key by symbol only (holdSide may be None from API)
+    trigger_map = {}  # "BTCUSDT" → {"tp": bool, "sl": bool}
     for o in all_trigger_orders:
         sym = o.get('symbol', '')
-        hold = o.get('holdSide', '')
         pt = o.get('planType', '')
-        key = f"{sym}_{hold}"
-        if key not in trigger_map:
-            trigger_map[key] = {'tp': False, 'sl': False}
+        if sym not in trigger_map:
+            trigger_map[sym] = {'tp': False, 'sl': False}
         if pt in ('profit_plan', 'pos_profit'):
-            trigger_map[key]['tp'] = True
+            trigger_map[sym]['tp'] = True
         elif pt in ('loss_plan', 'pos_loss'):
-            trigger_map[key]['sl'] = True
+            trigger_map[sym]['sl'] = True
 
     no_tp = []
     no_sl = []
@@ -144,8 +151,8 @@ try:
         has_preset_tp = bool(preset_tp and float(preset_tp) > 0)
         has_preset_sl = bool(preset_sl and float(preset_sl) > 0)
 
-        # Check trigger orders
-        trig = trigger_map.get(key, {'tp': False, 'sl': False})
+        # Check trigger orders (keyed by symbol only, holdSide may be None)
+        trig = trigger_map.get(sym, {'tp': False, 'sl': False})
 
         has_tp = has_preset_tp or trig['tp']
         has_sl = has_preset_sl or trig['sl']
