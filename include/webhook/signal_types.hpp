@@ -17,6 +17,7 @@
 #include <optional>
 #include <cmath>
 #include <functional>
+#include <regex>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 #include "core/types.hpp"
@@ -79,51 +80,52 @@ struct WebhookSignal {
 
     // -- JSON 파싱 --
     static std::optional<WebhookSignal> from_json(const std::string& body) {
-        // TradingView Custom JSON에서 이중 따옴표 문제 수정
-        // TradingView는 Custom JSON 필드의 키/값을 병합할 때
-        // ""token"" 형태로 이중 따옴표를 생성함
+        // 1차 시도: 원본 JSON 그대로 파싱
+        auto j = json::parse(body, nullptr, false);
+        if (!j.is_discarded()) {
+            WebhookSignal sig;
+            sig.received_at = now_ns();
+            if (j.contains("algorithm") || j.contains("alert")) return parse_sfx(j, sig);
+            return parse_generic(j, sig);
+        }
+
+        // 2차 시도: TradingView Custom JSON 이중 따옴표 수정
+        // TradingView는 Custom JSON 필드를 병합할 때 ""key"": ""value"" 패턴 생성
+        // 전략: regex로 ""내용"" → "내용" 패턴 치환 (빈 문자열 "" 보존)
         std::string sanitized = body;
-        std::string::size_type pos = 0;
-        while ((pos = sanitized.find("\"\"", pos)) != std::string::npos) {
-            bool should_remove = false;
 
-            // "" 뒤에 알파벳/숫자/_ → 이중 인코딩된 키 시작 (""token → "token)
-            if (pos + 2 < sanitized.size()) {
-                char next = sanitized[pos + 2];
-                if (std::isalnum(static_cast<unsigned char>(next)) || next == '_') {
-                    should_remove = true;
+        // ""word"" 패턴을 "word"로 변환 (키와 값 모두 처리)
+        // 빈 문자열 ""는 [^"]+ 조건에 의해 보존됨
+        try {
+            static const std::regex dq_re(R"(""{1,}([^"]+)"{1,})");
+            sanitized = std::regex_replace(sanitized, dq_re, "\"$1\"");
+        } catch (...) {
+            // regex 실패 시 fallback: 수동 치환
+            std::string::size_type pos = 0;
+            while ((pos = sanitized.find("\"\"", pos)) != std::string::npos) {
+                // "" 뒤에 알파벳/숫자/_ 가 오면 이중 인코딩
+                if (pos + 2 < sanitized.size()) {
+                    char next = sanitized[pos + 2];
+                    if (std::isalnum(static_cast<unsigned char>(next)) || next == '_') {
+                        sanitized.erase(pos, 1);
+                        continue;
+                    }
                 }
-            }
-
-            // "" 앞에 알파벳/숫자/_ → 이중 인코딩된 키 끝 (token"" → token")
-            if (!should_remove && pos > 0) {
-                char prev = sanitized[pos - 1];
-                if (std::isalnum(static_cast<unsigned char>(prev)) || prev == '_') {
-                    should_remove = true;
-                }
-            }
-
-            if (should_remove) {
-                sanitized.erase(pos, 1);
-            } else {
-                pos += 2; // 정상 빈 문자열 "" 보존
+                pos += 2;
             }
         }
-        spdlog::debug("[Signal] Sanitized body: {}", sanitized.substr(0, 300));
 
-        auto j = json::parse(sanitized, nullptr, false);
+        spdlog::warn("[Signal] Sanitized: {}", sanitized.substr(0, 500));
+
+        j = json::parse(sanitized, nullptr, false);
         if (j.is_discarded()) {
-            spdlog::warn("[Signal] JSON parse failed: {}", body.substr(0, 200));
+            spdlog::warn("[Signal] JSON parse failed: {}", body.substr(0, 500));
             return std::nullopt;
         }
 
         WebhookSignal sig;
         sig.received_at = now_ns();
-
-        if (j.contains("algorithm") || j.contains("alert")) {
-            return parse_sfx(j, sig);
-        }
-
+        if (j.contains("algorithm") || j.contains("alert")) return parse_sfx(j, sig);
         return parse_generic(j, sig);
     }
 
