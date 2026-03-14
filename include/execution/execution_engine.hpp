@@ -36,6 +36,7 @@
 #include "risk/fee_analyzer.hpp"
 #include "risk/position_sizer.hpp"
 #include "risk/portfolio_risk.hpp"
+#include "exchange/bitget_ws.hpp"
 
 namespace hft {
 
@@ -114,6 +115,11 @@ public:
             m_workers.emplace_back([this, i] { worker_loop(i); });
         }
 
+        // WebSocket 실시간 연결 시작
+        if (!m_trading.shadow_mode) {
+            start_websocket();
+        }
+
         spdlog::info("[Exec] Engine started: {} workers | shadow={} | symbols: {}",
             nw, m_trading.shadow_mode, m_trading.allowed_symbols.size());
     }
@@ -121,6 +127,11 @@ public:
     void stop() {
         m_running.store(false, std::memory_order_relaxed);
         m_signal_queue.shutdown();
+
+        // WebSocket 종료
+        if (m_ws_client) {
+            m_ws_client->stop();
+        }
 
         for (auto& t : m_workers) {
             if (t.joinable()) t.join();
@@ -253,6 +264,37 @@ private:
         } catch (const std::exception& e) {
             spdlog::error("[Exec] Balance fetch error: {}", e.what());
         }
+    }
+
+    void start_websocket() {
+        m_ws_client = std::make_unique<BitgetWSClient>(
+            m_auth,
+            // account 콜백 — 실시간 잔고 업데이트
+            [this](const WsAccountUpdate& upd) {
+                if (upd.available > 0) {
+                    std::lock_guard lock(m_pos_mtx);
+                    m_balance = upd.available;
+                    if (upd.equity > m_peak_balance) m_peak_balance = upd.equity;
+                    m_port_risk.update_balance(m_balance);
+                }
+            },
+            // position 콜백 — 로그만 (포지션 관리는 내부 추적)
+            [this](const WsPositionUpdate& upd) {
+                // 포지션 크기 0 = 청산됨
+                if (upd.size <= 0) {
+                    spdlog::info("[WS] Position closed: {} {}", upd.symbol, upd.hold_side);
+                }
+            },
+            // order 콜백 — 체결 확인 및 PnL 추적
+            [this](const WsOrderUpdate& upd) {
+                if (upd.status == "full-fill" && upd.trade_side == "close") {
+                    // 포지션 종료 체결 → PnL 기록
+                    spdlog::info("[WS] Close filled: {} ${:.2f} fee={:.4f}",
+                        upd.symbol, upd.filled_amount, upd.fee);
+                }
+            }
+        );
+        m_ws_client->start();
     }
 
     void worker_loop(int wid) {
@@ -558,6 +600,9 @@ private:
     double m_peak_balance{100.0};
     std::unordered_map<std::string, ManagedPosition> m_positions;
     std::vector<TradeRecord> m_trades;
+
+    // WebSocket 실시간 클라이언트
+    std::unique_ptr<BitgetWSClient> m_ws_client;
 };
 
 } // namespace hft
