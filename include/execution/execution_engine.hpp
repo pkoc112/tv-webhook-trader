@@ -250,7 +250,13 @@ private:
                 if (real_balance > 0) {
                     std::lock_guard lock(m_pos_mtx);
                     m_balance = real_balance;
-                    if (m_peak_balance < real_balance) m_peak_balance = real_balance;
+                    // peak_balance도 실제 잔고 기준으로 리셋
+                    // (state에서 잘못된 값 로드된 경우 교정)
+                    double real_equity = (equity > 0) ? equity : real_balance;
+                    if (m_peak_balance > real_equity * 2.0 || m_peak_balance < real_balance) {
+                        m_peak_balance = real_equity;
+                        spdlog::info("[Exec] Peak balance corrected to {:.2f}", m_peak_balance);
+                    }
                     m_port_risk.update_balance(m_balance);
                     spdlog::info("[Exec] Real Bitget balance: available={:.2f} equity={:.2f} -> using {:.2f}",
                         available, equity, m_balance);
