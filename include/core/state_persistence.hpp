@@ -72,7 +72,9 @@ public:
                 trades_arr.push_back(nlohmann::json{
                     {"symbol", t.symbol}, {"timeframe", t.timeframe},
                     {"exit_reason", t.exit_reason},
-                    {"pnl", t.pnl}, {"fee", t.fee}
+                    {"pnl", t.pnl}, {"fee", t.fee},
+                    {"entry_price", t.entry_price}, {"exit_price", t.exit_price},
+                    {"quantity", t.quantity}
                 });
             }
 

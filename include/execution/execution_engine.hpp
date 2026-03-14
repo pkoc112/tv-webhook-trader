@@ -1,7 +1,13 @@
 // ============================================================================
-// execution/execution_engine.hpp -- 멀티스레드 주문 실행 엔진 v5.0
-// 2026-03-15 | 안전성 강화 패치
+// execution/execution_engine.hpp -- 멀티스레드 주문 실행 엔진 v6.0
+// 2026-03-15 | A-grade 개선 패치
 //
+// v6.0 변경:
+//   - 실제 PnL 계산 (entry/exit/qty 기반 + 수수료 차감)
+//   - Default TP/SL 주입 (시그널 미제공 시 1.5%/1%)
+//   - AlertManager 통합 (순환 버퍼 500개 + /api/alerts)
+//   - WebSocket 포지션 콜백: 자동 제거 + PnL 기록
+//   - TradeRecord 확장: entry_price, exit_price, quantity
 // v5.0 변경:
 //   - TP/SL 재시도 (3회 backoff) + 전체 실패 시 긴급 청산
 //   - Preset TP/SL 제거 → set_sfx_tpsl() 단일 경로로 통합
@@ -37,6 +43,7 @@
 #include "risk/position_sizer.hpp"
 #include "risk/portfolio_risk.hpp"
 #include "exchange/bitget_ws.hpp"
+#include "core/alert_manager.hpp"
 
 namespace hft {
 
@@ -73,6 +80,7 @@ public:
                     PositionSizer& sizer,
                     PortfolioRiskManager& portfolio_risk,
                     StatePersistence& state_store,
+                    AlertManager& alerts,
                     TradingConfig trading_config = {})
         : m_signal_queue(signal_queue)
         , m_auth(std::move(auth))
@@ -83,6 +91,7 @@ public:
         , m_sizer(sizer)
         , m_port_risk(portfolio_risk)
         , m_state(state_store)
+        , m_alerts(alerts)
         , m_trading(std::move(trading_config))
         , m_order_limiter(m_trading.order_rate_limit)
         , m_tpsl_limiter(m_trading.tpsl_rate_limit) {}
@@ -201,8 +210,24 @@ public:
     // Scorer access for dashboard
     SymbolScorer& scorer() { return m_scorer; }
     PortfolioRiskManager& portfolio_risk() { return m_port_risk; }
+    AlertManager& alerts() { return m_alerts; }
 
 private:
+    // ── PnL 계산 헬퍼 ──
+    static double calc_pnl(const std::string& side, double entry, double exit,
+                           double qty, int leverage) {
+        if (entry <= 0 || qty <= 0) return 0.0;
+        double direction = (side == "long") ? 1.0 : -1.0;
+        return direction * (exit - entry) * qty;
+    }
+
+    // ── 수수료 추정: taker 0.06% × 진입+청산 왕복 ──
+    static double calc_fee(double price, double qty) {
+        constexpr double TAKER_FEE_PCT = 0.0006;  // 0.06%
+        double notional = price * qty;
+        return notional * TAKER_FEE_PCT * 2.0;  // round-trip
+    }
+
     void init_leverage() {
         net::io_context ioc;
         BitgetRestClient rest(ioc, m_auth, m_rest_config);
@@ -363,17 +388,48 @@ private:
                     m_port_risk.update_balance(m_balance);
                 }
             },
-            // position 콜백 — 로그만 (포지션 관리는 내부 추적)
+            // position 콜백 — 포지션 청산 감지 → 내부 상태 동기화 + PnL
             [this](const WsPositionUpdate& upd) {
-                // 포지션 크기 0 = 청산됨
                 if (upd.size <= 0) {
                     spdlog::info("[WS] Position closed: {} {}", upd.symbol, upd.hold_side);
+                    std::lock_guard lock(m_pos_mtx);
+                    for (auto it = m_positions.begin(); it != m_positions.end(); ++it) {
+                        if (it->second.symbol == upd.symbol && it->second.side == upd.hold_side) {
+                            auto& pos = it->second;
+                            double exit_price = upd.avg_price > 0 ? upd.avg_price : pos.entry_price;
+                            double fee = calc_fee(exit_price, pos.quantity);
+                            double pnl = calc_pnl(pos.side, pos.entry_price, exit_price,
+                                                   pos.quantity, pos.leverage) - fee;
+                            // Use exchange-reported PnL if available
+                            if (std::abs(upd.realized_pnl) > 0.0001) {
+                                pnl = upd.realized_pnl - fee;
+                            }
+                            TradeRecord tr;
+                            tr.symbol = upd.symbol;
+                            tr.timeframe = pos.timeframe;
+                            tr.exit_reason = "WS_CLOSE";
+                            tr.entry_price = pos.entry_price;
+                            tr.exit_price = exit_price;
+                            tr.quantity = pos.quantity;
+                            tr.pnl = pnl;
+                            tr.fee = fee;
+                            m_trades.push_back(tr);
+                            m_balance += pnl;
+                            if (m_balance > m_peak_balance) m_peak_balance = m_balance;
+                            spdlog::info("[WS] Auto-removed {} {} PnL={:.4f}",
+                                upd.symbol, upd.hold_side, pnl);
+                            m_alerts.info("TRADE", "WS close " + upd.symbol +
+                                " PnL=" + std::to_string(pnl).substr(0,8), upd.symbol);
+                            m_positions.erase(it);
+                            m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+                            break;
+                        }
+                    }
                 }
             },
-            // order 콜백 — 체결 확인 및 PnL 추적
+            // order 콜백 — 체결 확인 로그
             [this](const WsOrderUpdate& upd) {
                 if (upd.status == "full-fill" && upd.trade_side == "close") {
-                    // 포지션 종료 체결 → PnL 기록
                     spdlog::info("[WS] Close filled: {} ${:.2f} fee={:.4f}",
                         upd.symbol, upd.filled_amount, upd.fee);
                 }
@@ -682,11 +738,32 @@ private:
 
             spdlog::info("[W-{}] OK {} {} sz={:.6f} exid={}",
                 wid, sig.action, sig.symbol, sig.size, resp.exchange_order_id);
+            m_alerts.info("TRADE", "ENTRY " + sig.action + " " + sig.symbol +
+                " sz=" + std::to_string(sig.size).substr(0,8) + " lev=" + std::to_string(leverage) + "x",
+                sig.symbol);
 
             // Fix 4: 주문 성공 즉시 상태 저장 (크래시 시 포지션 유실 방지)
             {
                 std::lock_guard lock(m_pos_mtx);
                 m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+            }
+
+            // Default TP/SL 주입: 시그널에 TP/SL 없으면 1.5%/1% 기본값
+            if (!sig.has_tp1() && sig.price > 0) {
+                double tp_pct = 0.015;  // 1.5%
+                if (sig.action == "buy")
+                    sig.tp1 = sig.price * (1.0 + tp_pct);
+                else
+                    sig.tp1 = sig.price * (1.0 - tp_pct);
+                spdlog::info("[W-{}] Default TP1 injected: {:.{}f}", wid, sig.tp1, 4);
+            }
+            if (!sig.has_sl() && sig.price > 0) {
+                double sl_pct = 0.01;  // 1%
+                if (sig.action == "buy")
+                    sig.sl = sig.price * (1.0 - sl_pct);
+                else
+                    sig.sl = sig.price * (1.0 + sl_pct);
+                spdlog::info("[W-{}] Default SL injected: {:.{}f}", wid, sig.sl, 4);
             }
 
             // TP/SL 설정 (재시도 + 실패 시 긴급 청산)
@@ -742,19 +819,44 @@ private:
             std::lock_guard lock(m_pos_mtx);
             auto it = m_positions.find(matched_key);
             if (it != m_positions.end()) {
+                auto& pos = it->second;
+                double exit_price = sig.price > 0 ? sig.price : pos.entry_price;
+                double fee = calc_fee(exit_price, close_qty);
+                double pnl = calc_pnl(pos.side, pos.entry_price, exit_price, close_qty, pos.leverage) - fee;
+
                 if (sig.tp_level == "TP3" || close_ratio >= 0.99) {
                     // 전체 청산 → 포지션 제거 + 거래 기록
                     TradeRecord tr;
                     tr.symbol = sig.symbol;
-                    tr.timeframe = it->second.timeframe;
+                    tr.timeframe = pos.timeframe;
                     tr.exit_reason = sig.tp_level;
-                    tr.pnl = 0;  // 실제 PnL은 WebSocket 콜백에서 업데이트
+                    tr.entry_price = pos.entry_price;
+                    tr.exit_price = exit_price;
+                    tr.quantity = close_qty;
+                    tr.pnl = pnl;
+                    tr.fee = fee;
                     m_trades.push_back(tr);
+                    m_balance += pnl;
+                    if (m_balance > m_peak_balance) m_peak_balance = m_balance;
                     m_positions.erase(it);
+                    m_alerts.info("TRADE", sig.tp_level + " " + sig.symbol +
+                        " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
                 } else {
-                    // 부분 청산 → 수량 차감
-                    it->second.quantity -= close_qty;
-                    if (it->second.quantity <= 0) {
+                    // 부분 청산 → 수량 차감 + PnL 기록
+                    TradeRecord tr;
+                    tr.symbol = sig.symbol;
+                    tr.timeframe = pos.timeframe;
+                    tr.exit_reason = sig.tp_level + "_PARTIAL";
+                    tr.entry_price = pos.entry_price;
+                    tr.exit_price = exit_price;
+                    tr.quantity = close_qty;
+                    tr.pnl = pnl;
+                    tr.fee = fee;
+                    m_trades.push_back(tr);
+                    m_balance += pnl;
+                    if (m_balance > m_peak_balance) m_peak_balance = m_balance;
+                    pos.quantity -= close_qty;
+                    if (pos.quantity <= 0) {
                         m_positions.erase(it);
                     }
                 }
@@ -799,14 +901,26 @@ private:
             std::lock_guard lock(m_pos_mtx);
             auto it = m_positions.find(matched_key);
             if (it != m_positions.end()) {
+                auto& pos = it->second;
+                double exit_price = sig.price > 0 ? sig.price : pos.sl_price;
+                double fee = calc_fee(exit_price, pos.quantity);
+                double pnl = calc_pnl(pos.side, pos.entry_price, exit_price, pos.quantity, pos.leverage) - fee;
                 TradeRecord tr;
                 tr.symbol = sig.symbol;
-                tr.timeframe = it->second.timeframe;
+                tr.timeframe = pos.timeframe;
                 tr.exit_reason = "SL";
-                tr.pnl = 0;  // WebSocket에서 실제 PnL 업데이트
+                tr.entry_price = pos.entry_price;
+                tr.exit_price = exit_price;
+                tr.quantity = pos.quantity;
+                tr.pnl = pnl;
+                tr.fee = fee;
                 m_trades.push_back(tr);
+                m_balance += pnl;
+                if (m_balance > m_peak_balance) m_peak_balance = m_balance;
                 m_positions.erase(it);
                 m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+                m_alerts.warn("TRADE", "SL " + sig.symbol +
+                    " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
             }
             spdlog::info("[W-{}] SL closed {} hold={}", wid, sig.symbol, hold_side);
         } else {
@@ -866,13 +980,25 @@ private:
             std::lock_guard lock(m_pos_mtx);
             for (auto it = m_positions.begin(); it != m_positions.end(); ++it) {
                 if (it->second.symbol == sig.symbol && it->second.side == hold_side) {
+                    auto& pos = it->second;
+                    double exit_price = sig.price;  // 긴급청산은 현재가
+                    double fee = calc_fee(exit_price, pos.quantity);
+                    double pnl = calc_pnl(pos.side, pos.entry_price, exit_price, pos.quantity, pos.leverage) - fee;
                     TradeRecord tr;
                     tr.symbol = sig.symbol;
-                    tr.timeframe = it->second.timeframe;
+                    tr.timeframe = pos.timeframe;
                     tr.exit_reason = "EMERGENCY_CLOSE_NO_SL";
-                    tr.pnl = 0;
+                    tr.entry_price = pos.entry_price;
+                    tr.exit_price = exit_price;
+                    tr.quantity = pos.quantity;
+                    tr.pnl = pnl;
+                    tr.fee = fee;
                     m_trades.push_back(tr);
+                    m_balance += pnl;
+                    if (m_balance > m_peak_balance) m_peak_balance = m_balance;
                     m_positions.erase(it);
+                    m_alerts.critical("TRADE", "EMERGENCY CLOSE " + sig.symbol +
+                        " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
                     break;
                 }
             }
@@ -905,6 +1031,7 @@ private:
     PositionSizer& m_sizer;
     PortfolioRiskManager& m_port_risk;
     StatePersistence& m_state;
+    AlertManager& m_alerts;
     TradingConfig m_trading;
 
     RateLimiter m_order_limiter;

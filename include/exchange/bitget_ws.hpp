@@ -55,6 +55,7 @@ struct WsPositionUpdate {
     double size{0.0};
     double avg_price{0.0};
     double unrealized_pnl{0.0};
+    double realized_pnl{0.0};
     double leverage{0.0};
     double margin{0.0};
 };
@@ -344,9 +345,11 @@ private:
                     upd.leverage = safe_stod(item["leverage"]);
                 if (item.contains("margin"))
                     upd.margin = safe_stod(item["margin"]);
+                if (item.contains("achievedProfits"))
+                    upd.realized_pnl = safe_stod(item["achievedProfits"]);
 
-                spdlog::debug("[WS] Position: {} {} sz={:.4f} uPnL={:.4f}",
-                    upd.symbol, upd.hold_side, upd.size, upd.unrealized_pnl);
+                spdlog::debug("[WS] Position: {} {} sz={:.4f} uPnL={:.4f} rPnL={:.4f}",
+                    upd.symbol, upd.hold_side, upd.size, upd.unrealized_pnl, upd.realized_pnl);
 
                 if (m_on_position) m_on_position(upd);
             }

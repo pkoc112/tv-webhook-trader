@@ -32,6 +32,7 @@
 #include "risk/fee_analyzer.hpp"
 #include "risk/position_sizer.hpp"
 #include "risk/portfolio_risk.hpp"
+#include "core/alert_manager.hpp"
 #include "execution/execution_engine.hpp"
 #include "dashboard/dashboard_api.hpp"
 
@@ -202,11 +203,15 @@ int main(int argc, char* argv[]) {
             trading_config.num_workers, trading_config.shadow_mode);
         spdlog::info("TF filters: {}", trading_config.tf_filters.size());
 
+        // -- 5.5. 알림 매니저 --
+        hft::AlertManager alert_mgr;
+        alert_mgr.info("SYSTEM", "Server starting...");
+
         // -- 6. 실행 엔진 (모든 리스크 모듈 연결) --
         hft::ExecutionEngine exec_engine(
             signal_queue, auth, rest_config, risk_mgr,
             scorer, fee_analyzer, position_sizer, portfolio_risk, state_store,
-            trading_config);
+            alert_mgr, trading_config);
         exec_engine.start();
 
         // -- 7. 대시보드 서버 (HTTP) --
@@ -235,7 +240,8 @@ int main(int argc, char* argv[]) {
                     });
                 }
                 return arr;
-            }
+            },
+            .get_alerts = [&alert_mgr]() { return alert_mgr.get_alerts_json(100); }
         };
 
         std::string static_dir = config.value("static_dir", "static");
