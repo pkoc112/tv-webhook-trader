@@ -26,7 +26,7 @@
         "max_daily_loss": 500.0,
         "max_drawdown_pct": 5.0,
         "max_open_orders": 10,
-        "max_order_size": 0.5,
+        "max_order_size": 1000000000,
         "circuit_breaker_loss": 1000.0
     }
 }

@@ -26,7 +26,7 @@ namespace hft {
 struct RiskLimits {
     double max_position_per_symbol{1.0};
     double max_daily_loss{500.0};
-    double max_order_size{0.5};
+    double max_order_size{1e9};  // qty 단위; PositionSizer가 USDT 기반 제한 처리
     int    max_open_orders{10};
     double circuit_breaker_loss{1000.0};
     double max_drawdown_pct{5.0};
