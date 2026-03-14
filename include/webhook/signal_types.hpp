@@ -97,7 +97,7 @@ struct WebhookSignal {
         // ""word"" 패턴을 "word"로 변환 (키와 값 모두 처리)
         // 빈 문자열 ""는 [^"]+ 조건에 의해 보존됨
         try {
-            static const std::regex dq_re(R"(""{1,}([^"]+)"{1,})");
+            static const std::regex dq_re(R"_re_(""{1,}([^"]+)"{1,})_re_");
             sanitized = std::regex_replace(sanitized, dq_re, "\"$1\"");
         } catch (...) {
             // regex 실패 시 fallback: 수동 치환
