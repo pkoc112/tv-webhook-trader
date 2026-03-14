@@ -60,15 +60,15 @@
     },
 
     "portfolio_risk": {
-        "max_positions_total": 50,
+        "max_positions_total": 100,
         "max_positions_per_tf": {
-            "1": 10, "5": 12, "15": 10, "30": 8, "60": 6, "240": 4
+            "1": 20, "5": 25, "15": 20, "30": 15, "60": 10, "240": 6
         },
         "tf_exposure_pct": {
-            "1": 10, "5": 25, "15": 25, "30": 20, "60": 15, "240": 10
+            "1": 15, "5": 30, "15": 25, "30": 20, "60": 15, "240": 10
         },
         "correlation_factor": 0.7,
-        "max_correlated_risk_pct": 50.0,
+        "max_correlated_risk_pct": 80.0,
         "circuit_breaker": {
             "daily_loss_pct": 5.0,
             "weekly_loss_pct": 10.0,
