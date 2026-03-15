@@ -1,9 +1,12 @@
 // ============================================================================
 // risk/position_sizer.hpp -- 동적 포지션 사이징 엔진
-// v1.0 | 2026-03-13 | Python sfx-trader risk/position_sizer.py 포팅
+// v2.0 | 2026-03-15 | 잔고 비율 기반 동적 사이징
 //
-// Quarter-Kelly + Risk-per-trade 하이브리드
-// 드로다운 단계별 축소 + 티어 배수 적용
+// 핵심 변경:
+//   - 고정 USDT → 가용 잔고(available balance) 대비 % 계산
+//   - available = balance - used_margin (오픈 포지션 마진 차감)
+//   - base_pct(잔고의 30%) × 티어 배수 × TF 배수 × 드로다운 배수
+//   - Kelly/Risk 데이터 있으면 하이브리드, 없으면 잔고 비율
 // ============================================================================
 #pragma once
 
@@ -52,10 +55,13 @@ public:
     explicit PositionSizer(const nlohmann::json& config) {
         auto cfg = config.value("position_sizing", nlohmann::json::object());
         m_kelly_frac    = cfg.value("kelly_fraction", 0.25);
-        m_max_risk_pct  = cfg.value("max_risk_per_trade_pct", 2.0) / 100.0;
+        m_max_risk_pct  = cfg.value("max_risk_per_trade_pct", 5.0) / 100.0;
         m_min_usdt      = cfg.value("min_trade_usdt", 5.0);
-        m_max_usdt      = cfg.value("max_trade_usdt", 50.0);
-        m_default_usdt  = cfg.value("default_trade_usdt", 10.0);
+        m_max_pct       = cfg.value("max_trade_pct", 50.0) / 100.0;    // 잔고의 최대 50%
+        m_base_pct      = cfg.value("base_trade_pct", 30.0) / 100.0;   // 잔고의 기본 30%
+
+        // 하위 호환: 고정 USDT 값도 로드 (fallback)
+        m_max_usdt_hard = cfg.value("max_trade_usdt", 100.0);
 
         if (cfg.contains("drawdown_levels")) {
             for (auto& lv : cfg["drawdown_levels"]) {
@@ -66,19 +72,24 @@ public:
             }
         }
         if (m_dd_levels.empty()) {
-            m_dd_levels = {{3.0, 1.0}, {5.0, 0.75}, {8.0, 0.50}, {12.0, 0.25}, {100.0, 0.0}};
+            m_dd_levels = {{10.0, 1.0}, {20.0, 0.75}, {30.0, 0.50}, {50.0, 0.25}, {100.0, 0.0}};
         }
     }
 
     // ── Public API ──
 
+    // used_margin: 현재 오픈 포지션들이 사용 중인 마진 합계
     [[nodiscard]] SizeResult calc_size(
         double balance, const std::string& symbol, double price,
         double sl_price, int leverage,
-        const SymbolScore* score, double current_dd_pct) const
+        const SymbolScore* score, double current_dd_pct,
+        double used_margin = 0.0) const
     {
+        // 0. 가용 잔고 계산
+        double available = std::max(balance - used_margin, 0.0);
+
         // 1. 심볼 스코어 파라미터
-        double tier_mult = 0.5;
+        double tier_mult = 1.0;
         int max_lev = 10;
         double win_rate = 0.0, avg_win = 0.0, avg_loss = 0.0;
         bool data_ok = false;
@@ -110,61 +121,70 @@ public:
                 "Drawdown " + std::to_string(current_dd_pct) + "% -> trading halted"};
         }
 
-        // 3. 켈리 사이징
+        // 3. 기본 사이즈 = 가용 잔고의 base_pct%
+        double base_usdt = available * m_base_pct;
+        std::string method = "balance_pct";
+
+        // 4. 켈리 사이징 (데이터 충분할 때)
         double kelly_f = 0.0;
-        double kelly_usdt = m_default_usdt;
+        double kelly_usdt = base_usdt;
         if (data_ok && win_rate > 0 && avg_loss > 0) {
             kelly_f = kelly_fraction(win_rate, avg_win, avg_loss);
-            kelly_usdt = balance * kelly_f;
-            kelly_usdt = std::clamp(kelly_usdt, m_min_usdt, m_max_usdt);
+            kelly_usdt = balance * kelly_f;  // 켈리는 전체 잔고 기준
+            kelly_usdt = std::max(kelly_usdt, m_min_usdt);
         }
 
-        // 4. 리스크 기반 사이징
-        double risk_usdt = m_default_usdt;
-        std::string method = "default";
+        // 5. 리스크 기반 사이징 (SL 있을 때)
+        double risk_usdt = base_usdt;
         if (sl_price > 0 && price > 0) {
             double sl_dist = std::abs(price - sl_price) / price;
             if (sl_dist > 0) {
                 double risk_amount = balance * m_max_risk_pct;
                 risk_usdt = risk_amount / (sl_dist * leverage);
-                risk_usdt = std::clamp(risk_usdt, m_min_usdt, m_max_usdt);
+                risk_usdt = std::max(risk_usdt, m_min_usdt);
                 method = "risk_per_trade";
             }
         }
 
-        // 5. 최종 금액
-        double base_usdt;
+        // 6. 최종 기본 금액 결정
         if (data_ok && kelly_f > 0) {
-            base_usdt = std::min(kelly_usdt, risk_usdt);
+            base_usdt = std::min({kelly_usdt, risk_usdt, available * m_max_pct});
             method = "kelly_risk_hybrid";
-        } else if (sl_price > 0) {
-            base_usdt = risk_usdt;
+        } else if (sl_price > 0 && price > 0) {
+            base_usdt = std::min(risk_usdt, available * m_max_pct);
             method = "risk_per_trade";
         } else {
-            base_usdt = m_default_usdt;
-            method = "default";
+            // 기본: 가용 잔고의 base_pct%
+            base_usdt = std::min(base_usdt, available * m_max_pct);
+            method = "balance_pct";
         }
 
-        // 6. 배수 적용
+        // 7. 배수 적용 (티어 × 드로다운)
         double final_mult = tier_mult * dd_mult;
         double final_usdt = base_usdt * final_mult;
-        final_usdt = std::clamp(final_usdt, m_min_usdt, m_max_usdt);
 
-        // 미검증 심볼 캡
-        if (!data_ok) {
-            final_usdt = std::min(final_usdt, m_min_usdt);
+        // 최소/최대 클램프
+        final_usdt = std::max(final_usdt, m_min_usdt);
+        final_usdt = std::min(final_usdt, available * m_max_pct);  // 가용 잔고 초과 불가
+        final_usdt = std::min(final_usdt, m_max_usdt_hard);        // 절대 한도
+
+        // 잔고 부족 시
+        if (available < m_min_usdt) {
+            return {0, 0, leverage, "insufficient", 0, 0, 0,
+                tier_mult, dd_mult, final_mult,
+                "Insufficient available margin: " + fmt1(available) + " USDT"};
         }
 
-        // 7. 수량 변환
+        // 8. 수량 변환
         double qty = price > 0 ? final_usdt / price : 0;
 
         // 이유 문자열
-        std::string reason;
-        if (data_ok) reason += "Kelly=" + fmt_pct(kelly_f);
+        std::string reason = "Avail=" + fmt1(available) + "USDT";
+        reason += "(" + fmt1(m_base_pct * 100) + "%->" + fmt1(base_usdt) + ")";
+        if (data_ok) reason += " | Kelly=" + fmt_pct(kelly_f);
         if (sl_price > 0) {
-            if (!reason.empty()) reason += " | ";
             double sl_dist_pct = std::abs(price - sl_price) / price * 100.0;
-            reason += "SL=" + fmt2(sl_dist_pct) + "%";
+            reason += " | SL=" + fmt2(sl_dist_pct) + "%";
         }
         reason += " | Tier=" + tier_str + "(" + fmt2(tier_mult) + "x)";
         if (current_dd_pct > 0) {
@@ -180,6 +200,16 @@ public:
                 tier_mult, dd_mult,
                 std::round(final_mult * 10000.0) / 10000.0,
                 reason};
+    }
+
+    // 하위 호환: used_margin 없는 버전
+    [[nodiscard]] SizeResult calc_size(
+        double balance, const std::string& symbol, double price,
+        double sl_price, int leverage,
+        const SymbolScore* score, double current_dd_pct) const
+    {
+        return calc_size(balance, symbol, price, sl_price, leverage,
+                        score, current_dd_pct, 0.0);
     }
 
 private:
@@ -210,10 +240,11 @@ private:
     }
 
     double m_kelly_frac{0.25};
-    double m_max_risk_pct{0.02};
+    double m_max_risk_pct{0.05};
     double m_min_usdt{5.0};
-    double m_max_usdt{50.0};
-    double m_default_usdt{10.0};
+    double m_max_pct{0.50};         // 가용 잔고의 최대 50%
+    double m_base_pct{0.30};        // 가용 잔고의 기본 30%
+    double m_max_usdt_hard{100.0};  // 절대 상한
 
     struct DDLevel {
         double threshold;

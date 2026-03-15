@@ -723,13 +723,21 @@ private:
             }
         }
 
-        // 4. 동적 사이징
-        double balance_now, peak_now, dd_pct;
+        // 4. 동적 사이징 (가용 마진 기반)
+        double balance_now, peak_now, dd_pct, used_margin;
         {
             std::lock_guard lock(m_pos_mtx);
             balance_now = m_balance;
             peak_now = m_peak_balance;
             dd_pct = peak_now > 0 ? (peak_now - balance_now) / peak_now * 100.0 : 0;
+
+            // 오픈 포지션들의 사용 마진 합산
+            used_margin = 0.0;
+            for (auto& [key, pos] : m_positions) {
+                double notional = pos.entry_price * pos.quantity;
+                int pos_lev = pos.leverage > 0 ? pos.leverage : m_trading.default_leverage;
+                used_margin += notional / pos_lev;
+            }
         }
 
         const SymbolScore* score = m_scorer.get_score(sig.symbol);
@@ -737,7 +745,7 @@ private:
         if (score) leverage = std::min(leverage, score->max_leverage);
 
         double sl_price = sig.has_sl() ? sig.sl : 0;
-        auto sz = m_sizer.calc_size(balance_now, sig.symbol, sig.price, sl_price, leverage, score, dd_pct);
+        auto sz = m_sizer.calc_size(balance_now, sig.symbol, sig.price, sl_price, leverage, score, dd_pct, used_margin);
 
         if (sz.usdt_amount <= 0 || sz.qty <= 0) {
             spdlog::info("[W-{}] SKIP {}: size=0 ({})", wid, sig.symbol, sz.reason);
