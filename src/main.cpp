@@ -33,6 +33,7 @@
 #include "risk/position_sizer.hpp"
 #include "risk/portfolio_risk.hpp"
 #include "core/alert_manager.hpp"
+#include "risk/symbol_learner.hpp"
 #include "execution/execution_engine.hpp"
 #include "dashboard/dashboard_api.hpp"
 
@@ -207,11 +208,15 @@ int main(int argc, char* argv[]) {
         hft::AlertManager alert_mgr;
         alert_mgr.info("SYSTEM", "Server starting...");
 
+        // -- 5.6. 적응형 학습 엔진 --
+        hft::SymbolLearner symbol_learner(risk_config, "data");
+        spdlog::info("  SymbolLearner: L1-L4 adaptive learning engine");
+
         // -- 6. 실행 엔진 (모든 리스크 모듈 연결) --
         hft::ExecutionEngine exec_engine(
             signal_queue, auth, rest_config, risk_mgr,
             scorer, fee_analyzer, position_sizer, portfolio_risk, state_store,
-            alert_mgr, trading_config);
+            alert_mgr, symbol_learner, trading_config);
         exec_engine.start();
 
         // -- 7. 대시보드 서버 (HTTP) --
@@ -241,7 +246,9 @@ int main(int argc, char* argv[]) {
                 }
                 return arr;
             },
-            .get_alerts = [&alert_mgr]() { return alert_mgr.get_alerts_json(100); }
+            .get_alerts = [&alert_mgr]() { return alert_mgr.get_alerts_json(100); },
+            .get_learner = [&symbol_learner]() { return symbol_learner.get_learner_json(); },
+            .get_learner_summary = [&symbol_learner]() { return symbol_learner.get_summary_json(); }
         };
 
         std::string static_dir = config.value("static_dir", "static");
@@ -290,6 +297,7 @@ int main(int argc, char* argv[]) {
         g_server.store(nullptr, std::memory_order_relaxed);
         dashboard.stop();
         exec_engine.stop();
+        symbol_learner.save();
         spdlog::info("Shutdown. Orders: {} | Risk skips: {}",
             exec_engine.orders_executed(), exec_engine.risk_skip_count());
 

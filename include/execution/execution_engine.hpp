@@ -44,6 +44,7 @@
 #include "risk/portfolio_risk.hpp"
 #include "exchange/bitget_ws.hpp"
 #include "core/alert_manager.hpp"
+#include "risk/symbol_learner.hpp"
 
 namespace hft {
 
@@ -81,6 +82,7 @@ public:
                     PortfolioRiskManager& portfolio_risk,
                     StatePersistence& state_store,
                     AlertManager& alerts,
+                    SymbolLearner& learner,
                     TradingConfig trading_config = {})
         : m_signal_queue(signal_queue)
         , m_auth(std::move(auth))
@@ -92,6 +94,7 @@ public:
         , m_port_risk(portfolio_risk)
         , m_state(state_store)
         , m_alerts(alerts)
+        , m_learner(learner)
         , m_trading(std::move(trading_config))
         , m_order_limiter(m_trading.order_rate_limit)
         , m_tpsl_limiter(m_trading.tpsl_rate_limit) {}
@@ -211,6 +214,7 @@ public:
     SymbolScorer& scorer() { return m_scorer; }
     PortfolioRiskManager& portfolio_risk() { return m_port_risk; }
     AlertManager& alerts() { return m_alerts; }
+    SymbolLearner& learner() { return m_learner; }
 
 private:
     // ── PnL 계산 헬퍼 ──
@@ -414,6 +418,7 @@ private:
                             tr.pnl = pnl;
                             tr.fee = fee;
                             m_trades.push_back(tr);
+                            m_learner.record_trade(tr);
                             m_balance += pnl;
                             if (m_balance > m_peak_balance) m_peak_balance = m_balance;
                             spdlog::info("[WS] Auto-removed {} {} PnL={:.4f}",
@@ -608,6 +613,26 @@ private:
             return;
         }
 
+        // 1.5. 학습 엔진 판단 (L1~L4)
+        int current_hour_utc = -1;
+        {
+            auto now_t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+            std::tm tm{};
+#ifdef _WIN32
+            gmtime_s(&tm, &now_t);
+#else
+            gmtime_r(&now_t, &tm);
+#endif
+            current_hour_utc = tm.tm_hour;
+        }
+        auto learn_dec = m_learner.evaluate(sig.symbol, tf, current_hour_utc);
+        if (!learn_dec.allowed) {
+            spdlog::info("[W-{}] LEARN_SKIP {}: {}", wid, sig.symbol, learn_dec.skip_reason);
+            m_alerts.warn("RISK", "LEARN_SKIP " + sig.symbol + " " + learn_dec.skip_reason, sig.symbol);
+            m_risk_skips.fetch_add(1);
+            return;
+        }
+
         // 2. TF 필터
         auto tf_it = m_trading.tf_filters.find(tf);
         if (tf_it != m_trading.tf_filters.end()) {
@@ -664,6 +689,14 @@ private:
         if (tf_it != m_trading.tf_filters.end()) {
             sz.qty *= tf_it->second.size_multiplier;
             sz.usdt_amount *= tf_it->second.size_multiplier;
+        }
+
+        // L4: 학습 기반 사이즈 배율 적용
+        if (std::abs(learn_dec.size_multiplier - 1.0) > 0.01) {
+            sz.qty *= learn_dec.size_multiplier;
+            sz.usdt_amount *= learn_dec.size_multiplier;
+            spdlog::info("[W-{}] LEARN_SIZE {}: x{:.2f} q={:.1f}%",
+                wid, sig.symbol, learn_dec.size_multiplier, learn_dec.signal_quality * 100.0);
         }
 
         // 거래소 최소 주문금액 보장 (Bitget 5 USDT)
@@ -748,22 +781,22 @@ private:
                 m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
             }
 
-            // Default TP/SL 주입: 시그널에 TP/SL 없으면 1.5%/1% 기본값
+            // Default TP/SL 주입: 학습된 값 또는 기본값 (1.5%/1%)
             if (!sig.has_tp1() && sig.price > 0) {
-                double tp_pct = 0.015;  // 1.5%
+                double tp_pct = learn_dec.tp_pct;  // L2 학습값 또는 기본 1.5%
                 if (sig.action == "buy")
                     sig.tp1 = sig.price * (1.0 + tp_pct);
                 else
                     sig.tp1 = sig.price * (1.0 - tp_pct);
-                spdlog::info("[W-{}] Default TP1 injected: {:.{}f}", wid, sig.tp1, 4);
+                spdlog::info("[W-{}] TP1 injected: {:.4f} ({}%)", wid, sig.tp1, tp_pct * 100.0);
             }
             if (!sig.has_sl() && sig.price > 0) {
-                double sl_pct = 0.01;  // 1%
+                double sl_pct = learn_dec.sl_pct;  // L2 학습값 또는 기본 1%
                 if (sig.action == "buy")
                     sig.sl = sig.price * (1.0 - sl_pct);
                 else
                     sig.sl = sig.price * (1.0 + sl_pct);
-                spdlog::info("[W-{}] Default SL injected: {:.{}f}", wid, sig.sl, 4);
+                spdlog::info("[W-{}] SL injected: {:.4f} ({}%)", wid, sig.sl, sl_pct * 100.0);
             }
 
             // TP/SL 설정 (재시도 + 실패 시 긴급 청산)
@@ -836,6 +869,7 @@ private:
                     tr.pnl = pnl;
                     tr.fee = fee;
                     m_trades.push_back(tr);
+                    m_learner.record_trade(tr);
                     m_balance += pnl;
                     if (m_balance > m_peak_balance) m_peak_balance = m_balance;
                     m_positions.erase(it);
@@ -853,6 +887,7 @@ private:
                     tr.pnl = pnl;
                     tr.fee = fee;
                     m_trades.push_back(tr);
+                    m_learner.record_trade(tr);
                     m_balance += pnl;
                     if (m_balance > m_peak_balance) m_peak_balance = m_balance;
                     pos.quantity -= close_qty;
@@ -915,6 +950,7 @@ private:
                 tr.pnl = pnl;
                 tr.fee = fee;
                 m_trades.push_back(tr);
+                m_learner.record_trade(tr);
                 m_balance += pnl;
                 if (m_balance > m_peak_balance) m_peak_balance = m_balance;
                 m_positions.erase(it);
@@ -994,6 +1030,7 @@ private:
                     tr.pnl = pnl;
                     tr.fee = fee;
                     m_trades.push_back(tr);
+                    m_learner.record_trade(tr);
                     m_balance += pnl;
                     if (m_balance > m_peak_balance) m_peak_balance = m_balance;
                     m_positions.erase(it);
@@ -1032,6 +1069,7 @@ private:
     PortfolioRiskManager& m_port_risk;
     StatePersistence& m_state;
     AlertManager& m_alerts;
+    SymbolLearner& m_learner;
     TradingConfig m_trading;
 
     RateLimiter m_order_limiter;

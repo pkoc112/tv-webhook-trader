@@ -40,6 +40,8 @@ struct DashboardCallbacks {
     std::function<nlohmann::json()> get_symbol_scores;
     std::function<nlohmann::json()> get_positions;
     std::function<nlohmann::json()> get_alerts;
+    std::function<nlohmann::json()> get_learner;
+    std::function<nlohmann::json()> get_learner_summary;
 };
 
 class DashboardServer {
@@ -150,6 +152,20 @@ private:
                         m_cb.get_alerts().dump());
                 }
                 return make_response(http::status::ok, "[]");
+            }
+            if (target == "/api/learner") {
+                if (m_cb.get_learner) {
+                    return make_response(http::status::ok,
+                        m_cb.get_learner().dump());
+                }
+                return make_response(http::status::ok, "[]");
+            }
+            if (target == "/api/learner/summary") {
+                if (m_cb.get_learner_summary) {
+                    return make_response(http::status::ok,
+                        m_cb.get_learner_summary().dump());
+                }
+                return make_response(http::status::ok, "{}");
             }
             if (target == "/health") {
                 return make_response(http::status::ok,
