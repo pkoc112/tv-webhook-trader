@@ -107,6 +107,7 @@ public:
             m_peak_balance = loaded.peak_balance;
             m_positions = std::move(loaded.positions);
             m_trades = std::move(loaded.trades);
+            m_orders_executed.store(loaded.orders_executed, std::memory_order_relaxed);
             m_port_risk.update_balance(m_balance);
 
             if (!m_trades.empty()) {
@@ -157,7 +158,7 @@ public:
         // 최종 상태 저장
         {
             std::lock_guard lock(m_pos_mtx);
-            m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+            m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
         }
 
         spdlog::info("[Exec] Stopped. Executed={} Rejected={} RiskSkip={} Skipped={}",
@@ -309,14 +310,11 @@ private:
         }
     }
 
-    // -- 거래소 포지션 동기화: ghost position 제거 --
+    // -- 거래소 포지션 양방향 동기화 --
+    // 1) Ghost 제거: 내부에 있지만 거래소에 없는 포지션 삭제
+    // 2) 역방향 등록: 거래소에 있지만 내부에 없는 포지션 가져오기
     void sync_positions_with_exchange(BitgetRestClient& rest) {
         std::lock_guard lock(m_pos_mtx);
-
-        if (m_positions.empty()) {
-            spdlog::info("[Sync] No internal positions to reconcile");
-            return;
-        }
 
         try {
             auto resp = rest.get_positions();
@@ -327,57 +325,109 @@ private:
                 return;
             }
 
-            // Build a set of (symbol, holdSide) pairs that are actually open on Bitget
-            // Bitget returns holdSide as "long" or "short", and total > 0 means open
-            std::unordered_set<std::string> exchange_open;  // "BTCUSDT:long", "ETHUSDT:short", etc.
+            // Parse exchange positions with full data
+            struct ExchangePos {
+                std::string symbol;
+                std::string hold_side;
+                double total{0.0};
+                double avg_price{0.0};
+                int leverage{10};
+            };
+            std::unordered_map<std::string, ExchangePos> exchange_positions;  // key: "SYMBOL:side"
+
+            auto parse_double = [](const nlohmann::json& j, const std::string& key) -> double {
+                if (!j.contains(key)) return 0.0;
+                auto& v = j[key];
+                if (v.is_string()) {
+                    try { return std::stod(v.get<std::string>()); } catch (...) { return 0.0; }
+                } else if (v.is_number()) {
+                    return v.get<double>();
+                }
+                return 0.0;
+            };
+            auto parse_int = [](const nlohmann::json& j, const std::string& key, int def = 10) -> int {
+                if (!j.contains(key)) return def;
+                auto& v = j[key];
+                if (v.is_string()) {
+                    try { return std::stoi(v.get<std::string>()); } catch (...) { return def; }
+                } else if (v.is_number()) {
+                    return v.get<int>();
+                }
+                return def;
+            };
 
             if (resp.contains("data") && resp["data"].is_array()) {
                 for (auto& pos : resp["data"]) {
-                    std::string sym = pos.value("symbol", "");
-                    std::string hold_side = pos.value("holdSide", "");
-                    double total = 0.0;
-                    if (pos.contains("total")) {
-                        auto& tv = pos["total"];
-                        if (tv.is_string()) {
-                            try { total = std::stod(tv.get<std::string>()); } catch (...) {}
-                        } else if (tv.is_number()) {
-                            total = tv.get<double>();
-                        }
-                    }
+                    ExchangePos ep;
+                    ep.symbol    = pos.value("symbol", "");
+                    ep.hold_side = pos.value("holdSide", "");
+                    ep.total     = parse_double(pos, "total");
+                    ep.avg_price = parse_double(pos, "averageOpenPrice");
+                    ep.leverage  = parse_int(pos, "leverage", 10);
 
-                    if (!sym.empty() && total > 0) {
-                        exchange_open.insert(sym + ":" + hold_side);
+                    if (!ep.symbol.empty() && ep.total > 0) {
+                        std::string key = ep.symbol + ":" + ep.hold_side;
+                        exchange_positions[key] = ep;
                     }
                 }
             }
 
             spdlog::info("[Sync] Exchange has {} open position(s), internal has {}",
-                exchange_open.size(), m_positions.size());
+                exchange_positions.size(), m_positions.size());
 
-            // Find internal positions that are no longer on the exchange
+            // === 1) Forward: Remove ghost positions (internal but not on exchange) ===
             std::vector<std::string> to_remove;
             for (auto& [key, pos] : m_positions) {
                 std::string lookup = pos.symbol + ":" + pos.side;
-                if (exchange_open.find(lookup) == exchange_open.end()) {
+                if (exchange_positions.find(lookup) == exchange_positions.end()) {
                     to_remove.push_back(key);
                     spdlog::warn("[Sync] Ghost position removed: key={} symbol={} side={} entry={:.2f} qty={:.6f}",
                         key, pos.symbol, pos.side, pos.entry_price, pos.quantity);
                 }
             }
-
-            // Remove ghost positions
             for (auto& key : to_remove) {
                 m_positions.erase(key);
             }
 
-            if (to_remove.empty()) {
-                spdlog::info("[Sync] All {} internal position(s) confirmed on exchange", m_positions.size());
-            } else {
-                spdlog::info("[Sync] Reconciliation complete: removed {} ghost position(s), {} remaining",
-                    to_remove.size(), m_positions.size());
+            // === 2) Reverse: Import exchange positions not in internal ===
+            // Build set of internal symbol:side pairs for lookup
+            std::unordered_set<std::string> internal_lookup;
+            for (auto& [key, pos] : m_positions) {
+                internal_lookup.insert(pos.symbol + ":" + pos.side);
+            }
 
-                // Save state immediately after removing ghost positions
-                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+            int imported = 0;
+            for (auto& [exkey, ep] : exchange_positions) {
+                if (internal_lookup.find(exkey) == internal_lookup.end()) {
+                    // This exchange position is not tracked internally — import it
+                    ManagedPosition mp;
+                    mp.symbol      = ep.symbol;
+                    mp.timeframe   = "ext";  // 외부 동기화 마커
+                    mp.side        = ep.hold_side;
+                    mp.entry_price = ep.avg_price;
+                    mp.quantity    = ep.total;
+                    mp.leverage    = ep.leverage;
+                    mp.tier        = "C";     // 기본 티어
+                    mp.opened_at   = std::chrono::system_clock::now();
+
+                    // Use symbol:side as internal key (consistent with exchange key format)
+                    std::string internal_key = ep.symbol + "_" + ep.hold_side + "_ext";
+                    m_positions[internal_key] = mp;
+                    imported++;
+
+                    spdlog::info("[Sync] Imported exchange position: {} {} entry={:.4f} qty={:.6f} lev={}x",
+                        ep.symbol, ep.hold_side, ep.avg_price, ep.total, ep.leverage);
+                }
+            }
+
+            // Log summary
+            bool changed = !to_remove.empty() || imported > 0;
+            if (changed) {
+                spdlog::info("[Sync] Reconciliation: removed={} imported={} total={}",
+                    to_remove.size(), imported, m_positions.size());
+                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
+            } else {
+                spdlog::info("[Sync] All {} position(s) in sync", m_positions.size());
             }
 
         } catch (const std::exception& e) {
@@ -431,7 +481,7 @@ private:
                             m_alerts.info("TRADE", "WS close " + upd.symbol +
                                 " PnL=" + std::to_string(pnl).substr(0,8), upd.symbol);
                             m_positions.erase(it);
-                            m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+                            m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
                             break;
                         }
                     }
@@ -482,7 +532,7 @@ private:
 
         if (m_state.needs_save()) {
             std::lock_guard lock(m_pos_mtx);
-            m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+            m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
         }
 
         // Periodic position sync with exchange (every 120 seconds)
@@ -783,7 +833,7 @@ private:
             // Fix 4: 주문 성공 즉시 상태 저장 (크래시 시 포지션 유실 방지)
             {
                 std::lock_guard lock(m_pos_mtx);
-                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
             }
 
             // Default TP/SL 주입: 학습된 값 또는 기본값 (1.5%/1%)
@@ -900,7 +950,7 @@ private:
                         m_positions.erase(it);
                     }
                 }
-                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
             }
         } else {
             spdlog::error("[W-{}] TP {} close failed: {} {}",
@@ -959,7 +1009,7 @@ private:
                 m_balance += pnl;
                 if (m_balance > m_peak_balance) m_peak_balance = m_balance;
                 m_positions.erase(it);
-                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
                 m_alerts.warn("TRADE", "SL " + sig.symbol +
                     " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
             }
@@ -1044,7 +1094,7 @@ private:
                     break;
                 }
             }
-            m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades);
+            m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
         } else if (!tp_ok) {
             // TP만 실패: 위험하지 않으므로 로그만 (SL은 있음)
             spdlog::warn("[W-{}] TP failed after {} retries for {} — SL is active, continuing",

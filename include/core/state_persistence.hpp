@@ -41,13 +41,15 @@ public:
     void save_state(
         double balance, double peak_balance,
         const std::unordered_map<std::string, ManagedPosition>& positions,
-        const std::vector<TradeRecord>& trades)
+        const std::vector<TradeRecord>& trades,
+        uint64_t orders_executed = 0)
     {
         std::lock_guard lock(m_mtx);
         try {
             nlohmann::json state;
             state["balance"] = balance;
             state["peak_balance"] = peak_balance;
+            state["orders_executed"] = orders_executed;
             state["saved_at"] = iso_now();
 
             // Positions
@@ -90,6 +92,7 @@ public:
         double peak_balance{0.0};
         std::unordered_map<std::string, ManagedPosition> positions;
         std::vector<TradeRecord> trades;
+        uint64_t orders_executed{0};
         bool valid{false};
     };
 
@@ -140,6 +143,7 @@ private:
 
             result.balance = state.value("balance", 0.0);
             result.peak_balance = state.value("peak_balance", 0.0);
+            result.orders_executed = state.value("orders_executed", (uint64_t)0);
 
             if (state.contains("positions")) {
                 for (auto& [key, pj] : state["positions"].items()) {
