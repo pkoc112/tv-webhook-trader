@@ -222,6 +222,11 @@ public:
     AlertManager& alerts() { return m_alerts; }
     SymbolLearner& learner() { return m_learner; }
 
+    [[nodiscard]] std::vector<TradeRecord> trades_snapshot() const {
+        std::lock_guard lock(m_pos_mtx);
+        return m_trades;
+    }
+
 private:
     // ── PnL 계산 헬퍼 ──
     static double calc_pnl(const std::string& side, double entry, double exit,

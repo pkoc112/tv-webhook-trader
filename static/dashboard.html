@@ -572,6 +572,56 @@ body {
     </div>
 </div>
 
+<!-- ==================== TF PERFORMANCE ANALYSIS ==================== -->
+<div class="panel" id="tfPanel">
+    <div class="panel-header">
+        <span>타임프레임별 성과 분석</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px" id="tfStatus">...</span>
+    </div>
+    <!-- TF Summary Cards -->
+    <div style="padding:16px">
+        <div id="tfCards" class="stats-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:12px">
+            <!-- Dynamically filled -->
+        </div>
+    </div>
+    <!-- TF Comparison Bar Chart -->
+    <div style="padding:0 16px 16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <span style="font-size:12px;font-weight:600;color:var(--text-secondary)">TF 비교 (최소 5건 이상)</span>
+        </div>
+        <div id="tfBars" style="display:flex;flex-direction:column;gap:8px">
+            <!-- Dynamically filled -->
+        </div>
+    </div>
+    <!-- TF Detail Table -->
+    <div style="padding:0 16px 16px">
+        <div class="table-scroll">
+            <table class="trade-table" id="tfTable">
+                <thead>
+                    <tr>
+                        <th>TF</th>
+                        <th>등급</th>
+                        <th>거래수</th>
+                        <th>승률</th>
+                        <th>총 PnL</th>
+                        <th>수수료</th>
+                        <th>순 PnL</th>
+                        <th>PF</th>
+                        <th>평균승</th>
+                        <th>평균패</th>
+                        <th>최대연승</th>
+                        <th>최대연패</th>
+                        <th>EMA PnL</th>
+                    </tr>
+                </thead>
+                <tbody id="tfBody">
+                    <tr><td colspan="13" class="empty-state">TF 분석 로딩 중...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
 <!-- ==================== LEARNER ENGINE (L1~L4) ==================== -->
 <div class="panel" id="learnerPanel">
     <div class="panel-header">
@@ -1180,21 +1230,118 @@ function filterLearnerTable() {
 }
 
 // ============================================================
+//  TF PERFORMANCE ANALYSIS
+// ============================================================
+const tfColors = {'1':'#ef4444','5':'#f59e0b','15':'#3b82f6','30':'#a78bfa','60':'#10b981','unknown':'#64748b','all':'#22d3ee'};
+const tfLabels = {'1':'1분','5':'5분','15':'15분','30':'30분','60':'1시간','unknown':'미분류','all':'전체'};
+
+async function updateTfStats() {
+    try {
+        const resp = await fetch('/api/tf/stats');
+        const data = await resp.json();
+        if (!data.by_timeframe) return;
+
+        // Status
+        const overall = data.overall || {};
+        document.getElementById('tfStatus').textContent =
+            `${overall.total_trades || 0} trades | WR: ${overall.win_rate || 0}% | PF: ${overall.profit_factor || 0}`;
+
+        // Summary cards from ranking
+        const ranking = data.ranking || [];
+        const cardsEl = document.getElementById('tfCards');
+        if (ranking.length > 0) {
+            cardsEl.innerHTML = ranking.map(r => {
+                const tf = r.timeframe;
+                const color = tfColors[tf] || '#64748b';
+                const label = tfLabels[tf] || tf + 'm';
+                const gradeColors = {S:'var(--gold)',A:'var(--green)',B:'var(--blue)',C:'var(--text-secondary)',D:'var(--red)'};
+                return `<div class="stat-card" style="padding:12px;border-left:3px solid ${color}">
+                    <div class="label">${label}</div>
+                    <div class="value" style="font-size:16px;color:${color}">${r.win_rate}%</div>
+                    <div class="sub">PF: ${r.profit_factor} | <span style="color:${gradeColors[r.grade]||'#fff'}">${r.grade}등급</span></div>
+                    <div class="sub" style="color:${r.net_pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${r.net_pnl >= 0 ? '+' : ''}${r.net_pnl.toFixed(4)} USDT</div>
+                </div>`;
+            }).join('');
+        }
+
+        // Bar chart visualization
+        const barsEl = document.getElementById('tfBars');
+        if (ranking.length > 0) {
+            const maxTrades = Math.max(...ranking.map(r => r.total_trades));
+            barsEl.innerHTML = ranking.map(r => {
+                const tf = r.timeframe;
+                const color = tfColors[tf] || '#64748b';
+                const label = tfLabels[tf] || tf + 'm';
+                const barWidth = maxTrades > 0 ? (r.total_trades / maxTrades * 100) : 0;
+                const wrWidth = r.win_rate;
+                return `<div style="display:flex;align-items:center;gap:8px">
+                    <span style="min-width:40px;font-size:11px;font-weight:600;color:${color}">${label}</span>
+                    <div style="flex:1;position:relative;height:24px;background:var(--bg-secondary);border-radius:4px;overflow:hidden">
+                        <div style="position:absolute;height:100%;width:${barWidth}%;background:${color}22;border-radius:4px"></div>
+                        <div style="position:absolute;height:100%;width:${wrWidth}%;background:${color}66;border-radius:4px"></div>
+                        <span style="position:absolute;left:8px;top:4px;font-size:10px;font-weight:600;color:var(--text-primary);z-index:1">
+                            ${r.total_trades}건 | WR:${r.win_rate}% | PF:${r.profit_factor}
+                        </span>
+                    </div>
+                    <span style="min-width:60px;text-align:right;font-size:11px;font-weight:600;color:${r.net_pnl >= 0 ? 'var(--green)' : 'var(--red)'}">
+                        ${r.net_pnl >= 0 ? '+' : ''}${r.net_pnl.toFixed(3)}
+                    </span>
+                </div>`;
+            }).join('');
+        }
+
+        // Detail table
+        const tfData = data.by_timeframe || [];
+        const tbody = document.getElementById('tfBody');
+        if (tfData.length > 0) {
+            tbody.innerHTML = tfData.map(r => {
+                const tf = r.timeframe;
+                const color = tfColors[tf] || '#64748b';
+                const label = tfLabels[tf] || tf;
+                // find grade from ranking
+                const ranked = ranking.find(x => x.timeframe === tf);
+                const grade = ranked ? ranked.grade : '-';
+                const gradeColors = {S:'var(--gold)',A:'var(--green)',B:'var(--blue)',C:'var(--text-secondary)',D:'var(--red)'};
+
+                return `<tr>
+                    <td><span style="color:${color};font-weight:700">${label}</span></td>
+                    <td><span style="color:${gradeColors[grade]||'#fff'};font-weight:700">${grade}</span></td>
+                    <td>${r.total_trades}</td>
+                    <td class="${r.win_rate >= 50 ? 'positive' : r.win_rate > 0 ? 'negative' : ''}">${r.win_rate}%</td>
+                    <td class="${pnlClass(r.total_pnl)}">${fmtPnl(r.total_pnl, 4)}</td>
+                    <td style="color:var(--text-muted)">${fmt(r.total_fee, 4)}</td>
+                    <td class="${pnlClass(r.net_pnl)}" style="font-weight:600">${fmtPnl(r.net_pnl, 4)}</td>
+                    <td style="color:${r.profit_factor >= 1.5 ? 'var(--green)' : r.profit_factor >= 1.0 ? 'var(--yellow)' : 'var(--red)'}">${fmt(r.profit_factor, 2)}</td>
+                    <td class="positive">${fmtPnl(r.avg_win, 4)}</td>
+                    <td class="negative">${r.avg_loss > 0 ? '-' + fmt(r.avg_loss, 4) : '0'}</td>
+                    <td style="color:var(--green)">${r.max_consecutive_wins}</td>
+                    <td style="color:var(--red)">${r.max_consecutive_losses}</td>
+                    <td class="${pnlClass(r.ema_pnl)}">${fmtPnl(r.ema_pnl, 4)}</td>
+                </tr>`;
+            }).join('');
+        }
+    } catch(e) {
+        console.error('TF stats error:', e);
+    }
+}
+
+// ============================================================
 //  FETCH ALL + POLLING
 // ============================================================
 async function fetchAllData() {
     await Promise.all([updateStats(), updateRisk(), updatePositions()]);
     document.getElementById('lastUpdate').textContent = kstNow();
     document.getElementById('statusDot').style.background = 'var(--green)';
-    // Scores and learner are slower, fetch separately
+    // Scores, learner, TF stats are slower, fetch separately
     updateScores();
     updateLearner();
+    updateTfStats();
 }
 
 // Initial load
 fetchAllData();
 
-// Polling: main data every 5s, scores every 30s, learner every 15s
+// Polling: main data every 5s, scores every 30s, learner every 15s, TF stats every 30s
 setInterval(async () => {
     await Promise.all([updateStats(), updateRisk(), updatePositions()]);
     document.getElementById('lastUpdate').textContent = kstNow();
@@ -1202,6 +1349,7 @@ setInterval(async () => {
 
 setInterval(() => { updateScores(); }, 30000);
 setInterval(() => { updateLearner(); }, 15000);
+setInterval(() => { updateTfStats(); }, 30000);
 
 </script>
 </body>

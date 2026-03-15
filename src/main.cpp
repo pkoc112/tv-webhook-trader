@@ -36,6 +36,7 @@
 #include "risk/symbol_learner.hpp"
 #include "execution/execution_engine.hpp"
 #include "dashboard/dashboard_api.hpp"
+#include "dashboard/tf_analytics.hpp"
 
 using json = nlohmann::json;
 
@@ -248,7 +249,11 @@ int main(int argc, char* argv[]) {
             },
             .get_alerts = [&alert_mgr]() { return alert_mgr.get_alerts_json(100); },
             .get_learner = [&symbol_learner]() { return symbol_learner.get_learner_json(); },
-            .get_learner_summary = [&symbol_learner]() { return symbol_learner.get_summary_json(); }
+            .get_learner_summary = [&symbol_learner]() { return symbol_learner.get_summary_json(); },
+            .get_tf_stats = [&exec_engine]() {
+                auto trades = exec_engine.trades_snapshot();
+                return hft::TfAnalytics::analyze(trades);
+            }
         };
 
         std::string static_dir = config.value("static_dir", "static");

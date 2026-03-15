@@ -42,6 +42,7 @@ struct DashboardCallbacks {
     std::function<nlohmann::json()> get_alerts;
     std::function<nlohmann::json()> get_learner;
     std::function<nlohmann::json()> get_learner_summary;
+    std::function<nlohmann::json()> get_tf_stats;
 };
 
 class DashboardServer {
@@ -159,6 +160,13 @@ private:
                         m_cb.get_learner().dump());
                 }
                 return make_response(http::status::ok, "[]");
+            }
+            if (target == "/api/tf/stats") {
+                if (m_cb.get_tf_stats) {
+                    return make_response(http::status::ok,
+                        m_cb.get_tf_stats().dump());
+                }
+                return make_response(http::status::ok, "{}");
             }
             if (target == "/api/learner/summary") {
                 if (m_cb.get_learner_summary) {
