@@ -111,6 +111,11 @@ public:
 
             if (!m_trades.empty()) {
                 m_scorer.rescore_all(m_trades);
+                // Bootstrap learner with historical trades
+                for (const auto& t : m_trades) {
+                    m_learner.record_trade(t);
+                }
+                spdlog::info("[Exec] Learner bootstrapped with {} historical trades", m_trades.size());
             }
             spdlog::info("[Exec] State restored: balance={:.2f} positions={} trades={}",
                 m_balance, m_positions.size(), m_trades.size());
