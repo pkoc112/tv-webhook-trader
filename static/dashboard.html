@@ -634,10 +634,10 @@ body {
                         <th onclick="sortTable('learnerTable',3,'num')">PnL EMA <span class="sort-arrow">&#9650;</span></th>
                         <th onclick="sortTable('learnerTable',4,'num')">연패 <span class="sort-arrow">&#9650;</span></th>
                         <th onclick="sortTable('learnerTable',5,'str')">상태 <span class="sort-arrow">&#9650;</span></th>
-                        <th onclick="sortTable('learnerTable',6,'num')">시그널Q <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',6,'str')">최적TF <span class="sort-arrow">&#9650;</span></th>
                         <th onclick="sortTable('learnerTable',7,'num')">Kelly배수 <span class="sort-arrow">&#9650;</span></th>
-                        <th onclick="sortTable('learnerTable',8,'num')">학습TP% <span class="sort-arrow">&#9650;</span></th>
-                        <th onclick="sortTable('learnerTable',9,'num')">학습SL% <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',8,'num')">최적TP% <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',9,'num')">최적SL% <span class="sort-arrow">&#9650;</span></th>
                     </tr>
                 </thead>
                 <tbody id="learnerBody">
@@ -1083,45 +1083,55 @@ function renderLearnerTable(data) {
         return;
     }
 
-    // Sort by trades desc by default
-    data.sort((a, b) => (b.trades || 0) - (a.trades || 0));
+    // Sort by total_trades desc by default
+    data.sort((a, b) => (b.total_trades || 0) - (a.total_trades || 0));
 
     document.getElementById('learnerCount').textContent = data.length;
 
     tbody.innerHTML = data.map(s => {
-        const wr = s.win_rate != null ? (s.win_rate > 1 ? s.win_rate : s.win_rate * 100) : 0;
+        // win_rate: API returns as percentage (e.g. 50 = 50%)
+        const wr = s.win_rate || 0;
         const streak = s.consecutive_losses || 0;
+        const trades = s.total_trades || 0;
 
-        // Status badge
+        // Status badge (API: cooldown_active, blacklisted)
         let statusHtml = '';
         if (s.blacklisted) {
             statusHtml = '<span style="background:var(--red-bg);color:var(--red);padding:2px 6px;border-radius:3px;font-size:9px;font-weight:700">BLOCKED</span>';
-        } else if (s.cooling_down) {
+        } else if (s.cooldown_active) {
             statusHtml = '<span style="background:var(--yellow-bg);color:var(--yellow);padding:2px 6px;border-radius:3px;font-size:9px;font-weight:700">COOLDOWN</span>';
         } else {
             statusHtml = '<span style="background:var(--green-bg);color:var(--green);padding:2px 6px;border-radius:3px;font-size:9px;font-weight:700">ACTIVE</span>';
         }
 
-        // Kelly multiplier
-        const kelly = s.kelly_multiplier != null ? s.kelly_multiplier : (s.size_multiplier || 1.0);
+        // Kelly fraction → size multiplier mapping
+        const kf = s.kelly_fraction || 0;
+        let kellyMult = 0.5;
+        if (kf >= 0.15) kellyMult = 1.5;
+        else if (kf >= 0.10) kellyMult = 1.2;
+        else if (kf >= 0.05) kellyMult = 1.0;
+        else if (kf >= 0.02) kellyMult = 0.8;
 
-        // Learned TP/SL
-        const tp = s.learned_tp_pct != null ? (s.learned_tp_pct * 100).toFixed(2) + '%' : '-';
-        const sl = s.learned_sl_pct != null ? (s.learned_sl_pct * 100).toFixed(2) + '%' : '-';
-        const hasTPSL = s.learned_tp_pct != null && s.learned_tp_pct > 0;
+        // Optimal TP/SL (API: optimal_tp_pct / optimal_sl_pct, already in %)
+        const tpPct = s.optimal_tp_pct || 0;
+        const slPct = s.optimal_sl_pct || 0;
+        const hasTPSL = tpPct > 0 && tpPct !== 1.5; // 1.5 is default, not learned
+        const tp = tpPct > 0 ? fmt(tpPct, 2) + '%' : '-';
+        const sl = slPct > 0 ? fmt(slPct, 2) + '%' : '-';
 
-        // Signal quality
-        const sq = s.signal_quality != null ? s.signal_quality : 0.5;
+        // Best TF info
+        const bestTf = s.best_tf || 'N/A';
+        const bestTfWr = s.best_tf_wr || 0;
 
-        return `<tr data-blacklisted="${s.blacklisted?1:0}" data-cooling="${s.cooling_down?1:0}" data-learned="${hasTPSL?1:0}" data-trades="${s.trades||0}">
+        return `<tr data-blacklisted="${s.blacklisted?1:0}" data-cooling="${s.cooldown_active?1:0}" data-learned="${hasTPSL?1:0}" data-trades="${trades}">
             <td style="font-weight:600">${(s.symbol || '').replace('USDT', '')}</td>
-            <td>${s.trades || 0}</td>
+            <td>${trades}</td>
             <td class="${wr >= 50 ? 'positive' : wr > 0 ? 'negative' : ''}">${fmt(wr, 1)}%</td>
             <td class="${pnlClass(s.ema_pnl)}">${s.ema_pnl != null ? fmtPnl(s.ema_pnl, 4) : '-'}</td>
             <td style="color:${streak >= 3 ? 'var(--red)' : streak >= 2 ? 'var(--yellow)' : 'var(--text-muted)'}">${streak}</td>
             <td>${statusHtml}</td>
-            <td style="color:${sq >= 0.7 ? 'var(--green)' : sq >= 0.4 ? 'var(--yellow)' : 'var(--red)'}">${fmt(sq, 2)}</td>
-            <td>${fmt(kelly, 2)}x</td>
+            <td style="color:var(--text-secondary)">${bestTf !== 'N/A' ? '<span class="tf-badge tf-'+bestTf+'">'+bestTf+'m</span> '+fmt(bestTfWr,0)+'%' : '-'}</td>
+            <td>${fmt(kellyMult, 2)}x <span style="color:var(--text-muted);font-size:9px">(${fmt(kf,3)})</span></td>
             <td style="color:${hasTPSL ? 'var(--purple)' : 'var(--text-muted)'}">${tp}</td>
             <td style="color:${hasTPSL ? 'var(--purple)' : 'var(--text-muted)'}">${sl}</td>
         </tr>`;
