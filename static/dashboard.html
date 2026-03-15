@@ -582,8 +582,9 @@ body {
     <div style="padding:16px">
         <div class="stats-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:12px">
             <div class="stat-card" style="padding:12px">
-                <div class="label">학습 심볼</div>
-                <div class="value" style="font-size:18px;color:var(--cyan)" id="learnSymbols">-</div>
+                <div class="label">학습 항목</div>
+                <div class="value" style="font-size:18px;color:var(--cyan)" id="learnEntries">-</div>
+                <div class="sub" id="learnSymbols">- 심볼</div>
                 <div class="sub" id="learnEnabled">-</div>
             </div>
             <div class="stat-card" style="padding:12px">
@@ -611,10 +612,18 @@ body {
     <!-- Learner Detail Table -->
     <div style="padding:0 16px 16px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-            <span style="font-size:12px;font-weight:600;color:var(--text-secondary)">심볼별 학습 상태</span>
+            <span style="font-size:12px;font-weight:600;color:var(--text-secondary)">심볼:TF별 학습 상태</span>
             <div style="display:flex;gap:8px;align-items:center">
+                <select id="learnerTFFilter" onchange="filterLearnerTable()" style="font-family:'JetBrains Mono',monospace;font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
+                    <option value="all">전체 TF</option>
+                    <option value="1">1분</option>
+                    <option value="5">5분</option>
+                    <option value="15">15분</option>
+                    <option value="30">30분</option>
+                    <option value="60">60분</option>
+                </select>
                 <select id="learnerFilter" onchange="filterLearnerTable()" style="font-family:'JetBrains Mono',monospace;font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
-                    <option value="all">전체</option>
+                    <option value="all">전체 상태</option>
                     <option value="blacklisted">블랙리스트</option>
                     <option value="cooling">쿨다운</option>
                     <option value="learned">TP/SL 학습</option>
@@ -629,19 +638,19 @@ body {
                 <thead>
                     <tr>
                         <th onclick="sortTable('learnerTable',0,'str')">심볼 <span class="sort-arrow">&#9650;</span></th>
-                        <th onclick="sortTable('learnerTable',1,'num')">거래수 <span class="sort-arrow">&#9650;</span></th>
-                        <th onclick="sortTable('learnerTable',2,'num')">승률 <span class="sort-arrow">&#9650;</span></th>
-                        <th onclick="sortTable('learnerTable',3,'num')">PnL EMA <span class="sort-arrow">&#9650;</span></th>
-                        <th onclick="sortTable('learnerTable',4,'num')">연패 <span class="sort-arrow">&#9650;</span></th>
-                        <th onclick="sortTable('learnerTable',5,'str')">상태 <span class="sort-arrow">&#9650;</span></th>
-                        <th onclick="sortTable('learnerTable',6,'str')">최적TF <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',1,'str')">TF <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',2,'num')">거래수 <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',3,'num')">승률 <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',4,'num')">PnL EMA <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',5,'num')">연패 <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',6,'str')">상태 <span class="sort-arrow">&#9650;</span></th>
                         <th onclick="sortTable('learnerTable',7,'num')">Kelly배수 <span class="sort-arrow">&#9650;</span></th>
                         <th onclick="sortTable('learnerTable',8,'num')">최적TP% <span class="sort-arrow">&#9650;</span></th>
                         <th onclick="sortTable('learnerTable',9,'num')">최적SL% <span class="sort-arrow">&#9650;</span></th>
                     </tr>
                 </thead>
                 <tbody id="learnerBody">
-                    <tr><td colspan="10" class="empty-state">학습 데이터 로딩 중...</td></tr>
+                    <tr><td colspan="10" class="empty-state">학습 데이터 로딩 중... (v2: 심볼×TF별)</td></tr>
                 </tbody>
             </table>
         </div>
@@ -1047,7 +1056,10 @@ async function updateLearner() {
 
     // Summary cards
     if (summary) {
-        document.getElementById('learnSymbols').textContent = summary.total_symbols || 0;
+        const totalEntries = summary.total_entries || summary.total_symbols || 0;
+        const totalSymbols = summary.total_symbols || 0;
+        document.getElementById('learnEntries').textContent = totalEntries;
+        document.getElementById('learnSymbols').textContent = totalSymbols + ' 심볼';
         document.getElementById('learnEnabled').textContent = summary.enabled ? 'ACTIVE' : 'DISABLED';
         document.getElementById('learnEnabled').style.color = summary.enabled ? 'var(--green)' : 'var(--red)';
 
@@ -1065,7 +1077,7 @@ async function updateLearner() {
             lt > 0 ? lt + '개 심볼 최적화' : '15건 이상 필요';
 
         document.getElementById('learnerStatus').textContent =
-            summary.total_symbols + ' symbols | BL:' + bl + ' CD:' + cd + ' TPSL:' + lt;
+            totalEntries + ' entries (' + totalSymbols + ' symbols) | BL:' + bl + ' CD:' + cd + ' TPSL:' + lt;
     }
 
     // Detail table
@@ -1088,11 +1100,15 @@ function renderLearnerTable(data) {
 
     document.getElementById('learnerCount').textContent = data.length;
 
+    const tfColors = {'1':'#ef4444','5':'#f59e0b','15':'#3b82f6','30':'#a78bfa','60':'#10b981','all':'#64748b'};
+
     tbody.innerHTML = data.map(s => {
         // win_rate: API returns as percentage (e.g. 50 = 50%)
         const wr = s.win_rate || 0;
         const streak = s.consecutive_losses || 0;
         const trades = s.total_trades || 0;
+        const tf = s.timeframe || 'all';
+        const tfColor = tfColors[tf] || '#64748b';
 
         // Status badge (API: cooldown_active, blacklisted)
         let statusHtml = '';
@@ -1119,18 +1135,14 @@ function renderLearnerTable(data) {
         const tp = tpPct > 0 ? fmt(tpPct, 2) + '%' : '-';
         const sl = slPct > 0 ? fmt(slPct, 2) + '%' : '-';
 
-        // Best TF info
-        const bestTf = s.best_tf || 'N/A';
-        const bestTfWr = s.best_tf_wr || 0;
-
-        return `<tr data-blacklisted="${s.blacklisted?1:0}" data-cooling="${s.cooldown_active?1:0}" data-learned="${hasTPSL?1:0}" data-trades="${trades}">
+        return `<tr data-blacklisted="${s.blacklisted?1:0}" data-cooling="${s.cooldown_active?1:0}" data-learned="${hasTPSL?1:0}" data-trades="${trades}" data-tf="${tf}">
             <td style="font-weight:600">${(s.symbol || '').replace('USDT', '')}</td>
+            <td><span style="background:${tfColor}22;color:${tfColor};padding:2px 6px;border-radius:3px;font-size:10px;font-weight:700">${tf === 'all' ? 'ALL' : tf + 'm'}</span></td>
             <td>${trades}</td>
             <td class="${wr >= 50 ? 'positive' : wr > 0 ? 'negative' : ''}">${fmt(wr, 1)}%</td>
             <td class="${pnlClass(s.ema_pnl)}">${s.ema_pnl != null ? fmtPnl(s.ema_pnl, 4) : '-'}</td>
             <td style="color:${streak >= 3 ? 'var(--red)' : streak >= 2 ? 'var(--yellow)' : 'var(--text-muted)'}">${streak}</td>
             <td>${statusHtml}</td>
-            <td style="color:var(--text-secondary)">${bestTf !== 'N/A' ? '<span class="tf-badge tf-'+bestTf+'">'+bestTf+'m</span> '+fmt(bestTfWr,0)+'%' : '-'}</td>
             <td>${fmt(kellyMult, 2)}x <span style="color:var(--text-muted);font-size:9px">(${fmt(kf,3)})</span></td>
             <td style="color:${hasTPSL ? 'var(--purple)' : 'var(--text-muted)'}">${tp}</td>
             <td style="color:${hasTPSL ? 'var(--purple)' : 'var(--text-muted)'}">${sl}</td>
@@ -1140,6 +1152,7 @@ function renderLearnerTable(data) {
 
 function filterLearnerTable() {
     const filter = document.getElementById('learnerFilter').value;
+    const tfFilter = document.getElementById('learnerTFFilter').value;
     const query = document.getElementById('learnerSearch').value.toUpperCase();
     const rows = document.querySelectorAll('#learnerBody tr');
     let visible = 0;
@@ -1149,13 +1162,16 @@ function filterLearnerTable() {
         const sym = row.cells?.[0]?.textContent?.toUpperCase() || '';
         const matchSearch = !query || sym.includes(query);
         let matchFilter = true;
+        let matchTF = true;
 
         if (filter === 'blacklisted') matchFilter = row.dataset.blacklisted === '1';
         else if (filter === 'cooling') matchFilter = row.dataset.cooling === '1';
         else if (filter === 'learned') matchFilter = row.dataset.learned === '1';
         else if (filter === 'active') matchFilter = parseInt(row.dataset.trades || 0) >= 8;
 
-        const show = matchSearch && matchFilter;
+        if (tfFilter !== 'all') matchTF = row.dataset.tf === tfFilter;
+
+        const show = matchSearch && matchFilter && matchTF;
         row.style.display = show ? '' : 'none';
         if (show) visible++;
     });
