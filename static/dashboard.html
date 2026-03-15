@@ -572,6 +572,82 @@ body {
     </div>
 </div>
 
+<!-- ==================== LEARNER ENGINE (L1~L4) ==================== -->
+<div class="panel" id="learnerPanel">
+    <div class="panel-header">
+        <span>적응형 학습 엔진 (L1~L4)</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px" id="learnerStatus">...</span>
+    </div>
+    <!-- Summary Cards -->
+    <div style="padding:16px">
+        <div class="stats-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:12px">
+            <div class="stat-card" style="padding:12px">
+                <div class="label">학습 심볼</div>
+                <div class="value" style="font-size:18px;color:var(--cyan)" id="learnSymbols">-</div>
+                <div class="sub" id="learnEnabled">-</div>
+            </div>
+            <div class="stat-card" style="padding:12px">
+                <div class="label">블랙리스트</div>
+                <div class="value" style="font-size:18px" id="learnBlacklisted">-</div>
+                <div class="sub">10+거래 &amp; &lt;25% 승률</div>
+            </div>
+            <div class="stat-card" style="padding:12px">
+                <div class="label">쿨다운 중</div>
+                <div class="value" style="font-size:18px;color:var(--yellow)" id="learnCooling">-</div>
+                <div class="sub">3연패 → 30분 휴식</div>
+            </div>
+            <div class="stat-card" style="padding:12px">
+                <div class="label">TP/SL 학습</div>
+                <div class="value" style="font-size:18px;color:var(--purple)" id="learnTPSL">-</div>
+                <div class="sub" id="learnTPSLSub">15건 이상 필요</div>
+            </div>
+            <div class="stat-card" style="padding:12px">
+                <div class="label">학습 레벨</div>
+                <div class="value" style="font-size:14px;color:var(--cyan)" id="learnLevels">L1~L4</div>
+                <div class="sub">Filter/TP-SL/Quality/Kelly</div>
+            </div>
+        </div>
+    </div>
+    <!-- Learner Detail Table -->
+    <div style="padding:0 16px 16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <span style="font-size:12px;font-weight:600;color:var(--text-secondary)">심볼별 학습 상태</span>
+            <div style="display:flex;gap:8px;align-items:center">
+                <select id="learnerFilter" onchange="filterLearnerTable()" style="font-family:'JetBrains Mono',monospace;font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
+                    <option value="all">전체</option>
+                    <option value="blacklisted">블랙리스트</option>
+                    <option value="cooling">쿨다운</option>
+                    <option value="learned">TP/SL 학습</option>
+                    <option value="active">활성 (8+거래)</option>
+                </select>
+                <input type="text" class="search-input" id="learnerSearch" placeholder="심볼 검색..." oninput="filterLearnerTable()" style="width:150px">
+                <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted)" id="learnerCount">0</span>
+            </div>
+        </div>
+        <div class="table-scroll-lg">
+            <table class="trade-table" id="learnerTable">
+                <thead>
+                    <tr>
+                        <th onclick="sortTable('learnerTable',0,'str')">심볼 <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',1,'num')">거래수 <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',2,'num')">승률 <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',3,'num')">PnL EMA <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',4,'num')">연패 <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',5,'str')">상태 <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',6,'num')">시그널Q <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',7,'num')">Kelly배수 <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',8,'num')">학습TP% <span class="sort-arrow">&#9650;</span></th>
+                        <th onclick="sortTable('learnerTable',9,'num')">학습SL% <span class="sort-arrow">&#9650;</span></th>
+                    </tr>
+                </thead>
+                <tbody id="learnerBody">
+                    <tr><td colspan="10" class="empty-state">학습 데이터 로딩 중...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
 </div><!-- /container -->
 
 <script>
@@ -959,26 +1035,147 @@ function updateSymbolScoreTable() {
 }
 
 // ============================================================
+//  UPDATE: LEARNER ENGINE
+// ============================================================
+let learnerData = [];
+
+async function updateLearner() {
+    const [summary, detail] = await Promise.all([
+        fetchJson('/api/learner/summary'),
+        fetchJson('/api/learner')
+    ]);
+
+    // Summary cards
+    if (summary) {
+        document.getElementById('learnSymbols').textContent = summary.total_symbols || 0;
+        document.getElementById('learnEnabled').textContent = summary.enabled ? 'ACTIVE' : 'DISABLED';
+        document.getElementById('learnEnabled').style.color = summary.enabled ? 'var(--green)' : 'var(--red)';
+
+        const bl = summary.blacklisted || 0;
+        const blEl = document.getElementById('learnBlacklisted');
+        blEl.textContent = bl;
+        blEl.style.color = bl > 0 ? 'var(--red)' : 'var(--green)';
+
+        const cd = summary.cooling_down || 0;
+        document.getElementById('learnCooling').textContent = cd;
+
+        const lt = summary.learned_tpsl || 0;
+        document.getElementById('learnTPSL').textContent = lt;
+        document.getElementById('learnTPSLSub').textContent =
+            lt > 0 ? lt + '개 심볼 최적화' : '15건 이상 필요';
+
+        document.getElementById('learnerStatus').textContent =
+            summary.total_symbols + ' symbols | BL:' + bl + ' CD:' + cd + ' TPSL:' + lt;
+    }
+
+    // Detail table
+    if (Array.isArray(detail)) {
+        learnerData = detail;
+        renderLearnerTable(detail);
+    }
+}
+
+function renderLearnerTable(data) {
+    const tbody = document.getElementById('learnerBody');
+    if (!data || data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" class="empty-state">학습 데이터 없음</td></tr>';
+        document.getElementById('learnerCount').textContent = '0';
+        return;
+    }
+
+    // Sort by trades desc by default
+    data.sort((a, b) => (b.trades || 0) - (a.trades || 0));
+
+    document.getElementById('learnerCount').textContent = data.length;
+
+    tbody.innerHTML = data.map(s => {
+        const wr = s.win_rate != null ? (s.win_rate > 1 ? s.win_rate : s.win_rate * 100) : 0;
+        const streak = s.consecutive_losses || 0;
+
+        // Status badge
+        let statusHtml = '';
+        if (s.blacklisted) {
+            statusHtml = '<span style="background:var(--red-bg);color:var(--red);padding:2px 6px;border-radius:3px;font-size:9px;font-weight:700">BLOCKED</span>';
+        } else if (s.cooling_down) {
+            statusHtml = '<span style="background:var(--yellow-bg);color:var(--yellow);padding:2px 6px;border-radius:3px;font-size:9px;font-weight:700">COOLDOWN</span>';
+        } else {
+            statusHtml = '<span style="background:var(--green-bg);color:var(--green);padding:2px 6px;border-radius:3px;font-size:9px;font-weight:700">ACTIVE</span>';
+        }
+
+        // Kelly multiplier
+        const kelly = s.kelly_multiplier != null ? s.kelly_multiplier : (s.size_multiplier || 1.0);
+
+        // Learned TP/SL
+        const tp = s.learned_tp_pct != null ? (s.learned_tp_pct * 100).toFixed(2) + '%' : '-';
+        const sl = s.learned_sl_pct != null ? (s.learned_sl_pct * 100).toFixed(2) + '%' : '-';
+        const hasTPSL = s.learned_tp_pct != null && s.learned_tp_pct > 0;
+
+        // Signal quality
+        const sq = s.signal_quality != null ? s.signal_quality : 0.5;
+
+        return `<tr data-blacklisted="${s.blacklisted?1:0}" data-cooling="${s.cooling_down?1:0}" data-learned="${hasTPSL?1:0}" data-trades="${s.trades||0}">
+            <td style="font-weight:600">${(s.symbol || '').replace('USDT', '')}</td>
+            <td>${s.trades || 0}</td>
+            <td class="${wr >= 50 ? 'positive' : wr > 0 ? 'negative' : ''}">${fmt(wr, 1)}%</td>
+            <td class="${pnlClass(s.ema_pnl)}">${s.ema_pnl != null ? fmtPnl(s.ema_pnl, 4) : '-'}</td>
+            <td style="color:${streak >= 3 ? 'var(--red)' : streak >= 2 ? 'var(--yellow)' : 'var(--text-muted)'}">${streak}</td>
+            <td>${statusHtml}</td>
+            <td style="color:${sq >= 0.7 ? 'var(--green)' : sq >= 0.4 ? 'var(--yellow)' : 'var(--red)'}">${fmt(sq, 2)}</td>
+            <td>${fmt(kelly, 2)}x</td>
+            <td style="color:${hasTPSL ? 'var(--purple)' : 'var(--text-muted)'}">${tp}</td>
+            <td style="color:${hasTPSL ? 'var(--purple)' : 'var(--text-muted)'}">${sl}</td>
+        </tr>`;
+    }).join('');
+}
+
+function filterLearnerTable() {
+    const filter = document.getElementById('learnerFilter').value;
+    const query = document.getElementById('learnerSearch').value.toUpperCase();
+    const rows = document.querySelectorAll('#learnerBody tr');
+    let visible = 0;
+
+    rows.forEach(row => {
+        if (!row.dataset) { row.style.display = ''; return; }
+        const sym = row.cells?.[0]?.textContent?.toUpperCase() || '';
+        const matchSearch = !query || sym.includes(query);
+        let matchFilter = true;
+
+        if (filter === 'blacklisted') matchFilter = row.dataset.blacklisted === '1';
+        else if (filter === 'cooling') matchFilter = row.dataset.cooling === '1';
+        else if (filter === 'learned') matchFilter = row.dataset.learned === '1';
+        else if (filter === 'active') matchFilter = parseInt(row.dataset.trades || 0) >= 8;
+
+        const show = matchSearch && matchFilter;
+        row.style.display = show ? '' : 'none';
+        if (show) visible++;
+    });
+
+    document.getElementById('learnerCount').textContent = visible;
+}
+
+// ============================================================
 //  FETCH ALL + POLLING
 // ============================================================
 async function fetchAllData() {
     await Promise.all([updateStats(), updateRisk(), updatePositions()]);
     document.getElementById('lastUpdate').textContent = kstNow();
     document.getElementById('statusDot').style.background = 'var(--green)';
-    // Scores are slower, fetch separately
+    // Scores and learner are slower, fetch separately
     updateScores();
+    updateLearner();
 }
 
 // Initial load
 fetchAllData();
 
-// Polling: main data every 5s, scores every 30s
+// Polling: main data every 5s, scores every 30s, learner every 15s
 setInterval(async () => {
     await Promise.all([updateStats(), updateRisk(), updatePositions()]);
     document.getElementById('lastUpdate').textContent = kstNow();
 }, 5000);
 
 setInterval(() => { updateScores(); }, 30000);
+setInterval(() => { updateLearner(); }, 15000);
 
 </script>
 </body>
