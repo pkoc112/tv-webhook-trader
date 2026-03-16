@@ -196,12 +196,16 @@ public:
                 result.equity = equity;
                 result.unrealized_pnl = uPnL;
 
-                double real_balance = (available > 0) ? available : equity;
-                if (real_balance > 0) {
+                // available이 유효할 때만 m_balance 업데이트
+                // available=0이면 기존 WS 값 유지 (equity fallback 방지)
+                if (available > 0 || equity > 0) {
                     std::lock_guard lock(m_pos_mtx);
-                    m_balance = real_balance;
-                    double real_equity = (equity > 0) ? equity : real_balance;
-                    if (m_peak_balance > real_equity * 2.0 || m_peak_balance < real_balance) {
+                    if (available > 0) {
+                        m_balance = available;  // 가용잔고만 balance에 세팅
+                    }
+                    // available=0이면 m_balance 유지 (WS에서 세팅한 값)
+                    double real_equity = (equity > 0) ? equity : m_balance;
+                    if (m_peak_balance > real_equity * 2.0 || m_peak_balance < m_balance) {
                         m_peak_balance = real_equity;
                         spdlog::info("[Exec] Peak balance corrected to {:.2f}", m_peak_balance);
                     }
