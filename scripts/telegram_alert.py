@@ -239,17 +239,15 @@ def bitget_close(symbol: str, hold_side: str):
 # ---------------------------------------------------------------------------
 def cmd_help(chat_id, msg_id):
     text = (
-        "\U0001f916 <b>HFT Trader Bot Commands</b>\n\n"
-        "/status - \U0001f4ca \uacc4\uc88c \uc0c1\ud0dc (\uc794\uace0, PnL, \ud3ec\uc9c0\uc158)\n"
-        "/positions - \U0001f4cb \uc624\ud508 \ud3ec\uc9c0\uc158 \ubaa9\ub85d\n"
-        "/risk - \u26a1 \ub9ac\uc2a4\ud06c \uc0c1\ud0dc\n"
-        "/scores - \U0001f3c6 \uc2ec\ubcfc \ud2f0\uc5b4 \ub7ad\ud0b9\n"
-        "/trades - \U0001f4c8 \ucd5c\uadfc \uac70\ub798 \uae30\ub85d\n"
-        "/close <symbol> - \U0001f4a5 \ud3ec\uc9c0\uc158 \uccad\uc0b0\n"
-        "/closeall - \U0001f4a5 \uc804\uccb4 \uccad\uc0b0\n"
-        "/restart - \U0001f504 \uc11c\ubc84 \uc7ac\uc2dc\uc791\n"
-        "/logs - \U0001f4dc \ucd5c\uadfc \ub85c\uadf8\n"
-        "/help - \u2753 \ub3c4\uc6c0\ub9d0"
+        "/s - \uacc4\uc88c\uc0c1\ud0dc\n"
+        "/p - \ud3ec\uc9c0\uc158\n"
+        "/risk - \ub9ac\uc2a4\ud06c\n"
+        "/scores - \ud2f0\uc5b4\n"
+        "/t - \uac70\ub798\uae30\ub85d\n"
+        "/close BTC - \uccad\uc0b0\n"
+        "/closeall - \uc804\uccb4\uccad\uc0b0\n"
+        "/restart - \uc7ac\uc2dc\uc791\n"
+        "/l - \ub85c\uadf8"
     )
     send_telegram(text, chat_id, msg_id)
 
@@ -260,37 +258,25 @@ def cmd_status(chat_id, msg_id):
         send_telegram("\u274c API \uc5f0\uacb0 \uc2e4\ud328", chat_id, msg_id)
         return
 
-    portfolio = (risk or {}).get("portfolio", {})
-    now_kst = datetime.now(KST).strftime("%m/%d %H:%M")
+    p = (risk or {}).get("portfolio", {})
     bal = stats.get("balance", 0)
     pnl = stats.get("total_pnl", 0)
     roi = stats.get("roi_pct", 0)
     wr = stats.get("win_rate", 0)
-    wins = stats.get("wins", 0)
-    losses = stats.get("losses", 0)
-    total_trades = stats.get("total_trades", 0)
+    w = stats.get("wins", 0)
+    l = stats.get("losses", 0)
     opos = stats.get("open_positions", 0)
-    peak = stats.get("peak_balance", bal)
-    dd = portfolio.get("current_drawdown_pct", 0)
-    margin_pct = portfolio.get("margin_used_pct", 0)
-    daily = portfolio.get("daily_pnl", 0)
-    weekly = portfolio.get("weekly_pnl", 0)
-    cb = portfolio.get("circuit_breaker_active", False)
-
-    pnl_emoji = "\U0001f7e2" if pnl >= 0 else "\U0001f534"
-    daily_emoji = "\U0001f7e2" if daily >= 0 else "\U0001f534"
+    dd = p.get("current_drawdown_pct", 0)
+    daily = p.get("daily_pnl", 0)
+    cb = p.get("circuit_breaker_active", False)
+    cb_txt = "ON" if cb else "OFF"
 
     text = (
-        f"\U0001f4ca <b>HFT Trader Status</b>  <i>{now_kst} KST</i>\n"
-        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        f"\U0001f4b0 \uc794\uace0: <b>${bal:.2f}</b> (Peak: ${peak:.2f})\n"
-        f"{pnl_emoji} \ucd1d PnL: <b>{pnl:+.4f}</b> ({roi:+.2f}%)\n"
-        f"{daily_emoji} \uc77c\uac04: {daily:+.4f} | \uc8fc\uac04: {weekly:+.4f}\n"
-        f"\U0001f4c9 DD: {dd:.2f}% | \ub9c8\uc9c4: {margin_pct:.1f}%\n"
-        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        f"\U0001f4cb \ud3ec\uc9c0\uc158: <b>{opos}</b>\uac1c\n"
-        f"\U0001f3af \uc2b9\ub960: {wr:.1f}% ({wins}W/{losses}L, \ucd1d{total_trades})\n"
-        f"\U0001f6a8 \uc11c\ud0b7\ube0c\ub808\uc774\ucee4: " + ("ON \u26a0\ufe0f" if cb else "OFF \u2705")
+        f"<b>\uacc4\uc88c</b>\n"
+        f"\uc794\uace0: ${bal:.2f} | PnL: {pnl:+.4f} ({roi:+.2f}%)\n"
+        f"\uc77c\uac04: {daily:+.4f} | DD: {dd:.2f}%\n"
+        f"\ud3ec\uc9c0\uc158: {opos}\uac1c | \uc2b9\ub960: {wr:.1f}% ({w}W/{l}L)\n"
+        f"\uc11c\ud0b7\ube0c: {cb_txt}"
     )
     send_telegram(text, chat_id, msg_id)
 
@@ -302,35 +288,16 @@ def cmd_positions(chat_id, msg_id):
 
     positions = data if isinstance(data, list) else data.get("positions", [])
     if not positions:
-        send_telegram("\U0001f4cb \uc624\ud508 \ud3ec\uc9c0\uc158 \uc5c6\uc74c", chat_id, msg_id)
+        send_telegram("\ud3ec\uc9c0\uc158 \uc5c6\uc74c", chat_id, msg_id)
         return
 
-    # Group by TF
-    by_tf = {}
-    for p in positions:
+    lines = [f"<b>\ud3ec\uc9c0\uc158</b> ({len(positions)}\uac1c)\n"]
+    for p in positions[:20]:
+        s = "\U0001f7e2" if p.get("side") == "long" else "\U0001f534"
+        sym = p.get("symbol", "?").replace("USDT", "")
         tf = p.get("timeframe", "?")
-        by_tf.setdefault(tf, []).append(p)
-
-    lines = [f"\U0001f4cb <b>\uc624\ud508 \ud3ec\uc9c0\uc158</b> ({len(positions)}\uac1c)\n"]
-    tf_order = ["15", "30", "60", "ext"]
-    for tf in tf_order:
-        plist = by_tf.pop(tf, [])
-        if not plist:
-            continue
-        lines.append(f"\n<b>[{tf}m]</b> {len(plist)}\uac1c")
-        for p in plist[:10]:
-            side_e = "\U0001f7e2" if p.get("side") == "long" else "\U0001f534"
-            sym = p.get("symbol", "?").replace("USDT", "")
-            lev = p.get("leverage", "?")
-            entry = p.get("entry_price", 0)
-            lines.append(f"  {side_e} {sym} {lev}x @ {entry}")
-    # Remaining TFs
-    for tf, plist in by_tf.items():
-        lines.append(f"\n<b>[{tf}]</b> {len(plist)}\uac1c")
-        for p in plist[:5]:
-            side_e = "\U0001f7e2" if p.get("side") == "long" else "\U0001f534"
-            sym = p.get("symbol", "?").replace("USDT", "")
-            lines.append(f"  {side_e} {sym} {p.get('leverage','?')}x")
+        lev = p.get("leverage", "?")
+        lines.append(f"{s} {sym} {tf}m {lev}x")
 
     text = "\n".join(lines)
     if len(text) > 4000:
@@ -342,28 +309,19 @@ def cmd_risk(chat_id, msg_id):
     if not risk:
         send_telegram("\u274c API \uc5f0\uacb0 \uc2e4\ud328", chat_id, msg_id)
         return
-    portfolio = risk.get("portfolio", {})
-    checks = risk.get("check_stats", {})
+    p = risk.get("portfolio", {})
+    c = risk.get("check_stats", {})
 
-    pos_tf = portfolio.get("positions_by_tf", {})
-    exp_tf = portfolio.get("exposure_by_tf", {})
-    tf_lines = []
-    for tf in ["15", "30", "60"]:
-        cnt = pos_tf.get(tf, 0)
-        exp = exp_tf.get(tf, 0)
-        if cnt > 0:
-            tf_lines.append(f"  {tf}m: {cnt}\uac1c (${exp:.0f})")
+    pos_tf = p.get("positions_by_tf", {})
+    tf_info = " | ".join(f"{tf}m:{cnt}" for tf, cnt in sorted(pos_tf.items()) if cnt > 0)
 
     text = (
-        f"\u26a1 <b>\ub9ac\uc2a4\ud06c \uc0c1\ud0dc</b>\n\n"
-        f"\U0001f6e1 \ub4dc\ub85c\ub2e4\uc6b4: {portfolio.get('current_drawdown_pct',0):.2f}%\n"
-        f"\U0001f4b3 \ub9c8\uc9c4 \uc0ac\uc6a9: {portfolio.get('margin_used_pct',0):.1f}%\n"
-        f"\U0001f4b5 \ucd1d \ub178\ucd9c: ${portfolio.get('total_notional',0):,.0f}\n"
-        f"\U0001f517 \uc0c1\uad00 \ub9ac\uc2a4\ud06c: {portfolio.get('correlated_risk_pct',0)}%\n"
-        f"\U0001f6a8 \uc11c\ud0b7\ube0c: {'ON' if portfolio.get('circuit_breaker_active') else 'OFF'}\n"
-        f"\n<b>TF\ubcc4 \ud3ec\uc9c0\uc158:</b>\n"
-        + "\n".join(tf_lines) + "\n"
-        f"\n\u2705 \ub9ac\uc2a4\ud06c \uccb4\ud06c: {checks.get('passed',0)}/{checks.get('total_checks',0)} pass"
+        f"<b>\ub9ac\uc2a4\ud06c</b>\n"
+        f"DD: {p.get('current_drawdown_pct',0):.2f}% | \ub9c8\uc9c4: {p.get('margin_used_pct',0):.1f}%\n"
+        f"\ub178\ucd9c: ${p.get('total_notional',0):,.0f} | \uc0c1\uad00: {p.get('correlated_risk_pct',0)}%\n"
+        f"TF: {tf_info or '-'}\n"
+        f"\uccb4\ud06c: {c.get('passed',0)}/{c.get('total_checks',0)} | "
+        f"\uc11c\ud0b7\ube0c: {'ON' if p.get('circuit_breaker_active') else 'OFF'}"
     )
     send_telegram(text, chat_id, msg_id)
 
@@ -374,31 +332,25 @@ def cmd_scores(chat_id, msg_id):
         return
     ranking = data.get("ranking", [])
     if not ranking:
-        send_telegram("\U0001f3c6 \uc2a4\ucf54\uc5b4\ub9c1 \ub370\uc774\ud130 \uc5c6\uc74c (\ucd5c\uc18c 20\uac74 \ud544\uc694)", chat_id, msg_id)
+        send_telegram("\ud2f0\uc5b4 \ub370\uc774\ud130 \uc5c6\uc74c (\ucd5c\uc18c 20\uac74 \ud544\uc694)", chat_id, msg_id)
         return
 
-    # Filter 1m/5m
     ranking = [r for r in ranking if r.get("timeframe") not in ("1", "5")]
 
-    tier_emoji = {"S": "\U0001f451", "A": "\U0001f947", "B": "\U0001f948", "C": "\U0001f949", "D": "\u26aa", "X": "\u274c"}
-    lines = [f"\U0001f3c6 <b>\uc2ec\ubcfc \ud2f0\uc5b4 \ub7ad\ud0b9</b> (Top 15)\n"]
-    for i, r in enumerate(ranking[:15], 1):
+    lines = [f"<b>\ud2f0\uc5b4</b> (Top 10)\n"]
+    for i, r in enumerate(ranking[:10], 1):
         t = r.get("tier", "?")
-        em = tier_emoji.get(t, "\u2753")
         sym = r.get("symbol", "?").replace("USDT", "")
         tf = r.get("timeframe", "?")
         sc = r.get("score", 0)
-        wr = r.get("win_rate", 0)
-        trades = r.get("total_trades", 0)
-        lines.append(f"{i}. {em}{t} <b>{sym}</b>:{tf}m  \uc810\uc218:{sc:.0f} WR:{wr:.0f}% ({trades})")
+        lines.append(f"{i}. [{t}] {sym} {tf}m ({sc:.0f}\uc810)")
 
-    # Tier summary
     tier_counts = {}
     for r in ranking:
         t = r.get("tier", "?")
         tier_counts[t] = tier_counts.get(t, 0) + 1
-    summary = " | ".join(f"{t}:{c}" for t, c in sorted(tier_counts.items()))
-    lines.append(f"\n\ud2f0\uc5b4 \ubd84\ud3ec: {summary}")
+    summary = " ".join(f"{t}:{c}" for t, c in sorted(tier_counts.items()))
+    lines.append(f"\n\ubd84\ud3ec: {summary}")
 
     send_telegram("\n".join(lines), chat_id, msg_id)
 
@@ -411,20 +363,15 @@ def cmd_trades(chat_id, msg_id):
     trades = stats.get("recent_trades", [])
     if not trades:
         total = stats.get("total_trades", 0)
-        if total == 0:
-            send_telegram("\U0001f4c8 \uac70\ub798 \uae30\ub85d \uc5c6\uc74c (\ub9ac\uc14b \ud6c4 \uc0c8\ub85c \uc218\uc9d1 \uc911)", chat_id, msg_id)
-        else:
-            send_telegram(f"\U0001f4c8 \ucd1d {total}\uac74 \uac70\ub798 \uc644\ub8cc (API\uc5d0\uc11c \uc0c1\uc138 \uc870\ud68c \ubd88\uac00)", chat_id, msg_id)
+        send_telegram(f"\uac70\ub798\uae30\ub85d: \ucd1d {total}\uac74 (\uc0c1\uc138 \uc5c6\uc74c)", chat_id, msg_id)
         return
 
-    lines = [f"\U0001f4c8 <b>\ucd5c\uadfc \uac70\ub798</b> ({len(trades)}\uac74)\n"]
+    lines = [f"<b>\ucd5c\uadfc\uac70\ub798</b> ({len(trades)}\uac74)\n"]
     for t in trades[:10]:
         sym = t.get("symbol", "?").replace("USDT", "")
-        side = t.get("side", "?")
         pnl = t.get("pnl", 0)
-        side_e = "\U0001f7e2" if side == "long" else "\U0001f534"
-        pnl_e = "\u2705" if pnl >= 0 else "\u274c"
-        lines.append(f"{side_e} {sym} {side} {pnl_e} {pnl:+.4f} USDT")
+        mark = "\u2705" if pnl >= 0 else "\u274c"
+        lines.append(f"{mark} {sym} {pnl:+.4f}")
 
     send_telegram("\n".join(lines), chat_id, msg_id)
 
@@ -525,7 +472,7 @@ def cmd_logs(chat_id, msg_id):
                 msg = msg[:100] + "..."
             formatted.append(f"<code>{msg}</code>")
 
-        text = f"\U0001f4dc <b>\ucd5c\uadfc \ub85c\uadf8</b> ({len(formatted)}\uc904)\n\n" + "\n".join(formatted)
+        text = f"<b>\ub85c\uadf8</b> ({len(formatted)}\uc904)\n\n" + "\n".join(formatted)
         if len(text) > 4000:
             text = text[:4000] + "\n..."
         send_telegram(text, chat_id, msg_id)
@@ -686,15 +633,13 @@ def main():
         sys.exit(1)
 
     def flush_batch(lines):
-        header = f"<b>\U0001f4e1 {SERVICE_NAME}</b>"
         body = "\n".join(lines)
-        msg = f"{header}\n\n{body}"
-        if len(msg) > 4000:
+        if len(body) > 4000:
             chunks = [lines[i:i+10] for i in range(0, len(lines), 10)]
             for chunk in chunks:
-                send_telegram(f"{header}\n\n" + "\n".join(chunk))
+                send_telegram("\n".join(chunk))
         else:
-            send_telegram(msg)
+            send_telegram(body)
 
     batcher = LineBatcher(flush_batch)
 
@@ -714,12 +659,8 @@ def main():
     log.info("Command polling thread started")
 
     # Startup notification
-    now_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-    send_telegram(
-        f"\U0001f680 <b>{SERVICE_NAME}</b> Bot \uc2dc\uc791\n"
-        f"\U0001f552 {now_kst} KST\n"
-        f"\U0001f4f1 /help \ub85c \uba85\ub839\uc5b4 \ud655\uc778"
-    )
+    now_kst = datetime.now(KST).strftime("%m/%d %H:%M")
+    send_telegram(f"Bot \uc2dc\uc791 ({now_kst} KST) - /help")
 
     # Follow journal for alerts
     for raw_line in follow_journal():
