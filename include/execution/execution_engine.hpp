@@ -238,9 +238,12 @@ public:
     }
 
     [[nodiscard]] nlohmann::json get_stats() const {
-        return m_trade_rec.get_stats(
+        auto stats = m_trade_rec.get_stats(
             [this]() -> size_t { std::lock_guard lock(m_pos_mtx); return m_positions.size(); }(),
             m_orders_executed.load(), m_risk_skips.load(), m_trading.shadow_mode);
+        stats["last_balance_sync"] = m_last_balance_sync.load(std::memory_order_relaxed);
+        stats["ws_connected"] = m_ws_client ? true : false;
+        return stats;
     }
 
     // Scorer access for dashboard
@@ -372,11 +375,12 @@ private:
             m_pos_mgr.save_state(m_trades, m_orders_executed.load());
         }
 
-        // Periodic position sync with exchange (every 120 seconds)
+        // Periodic position sync with exchange (every 60 seconds)
         auto now_sec = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
         auto last = m_last_sync_ts.load(std::memory_order_relaxed);
-        if (now_sec - last >= 120) {
+        constexpr int64_t SYNC_INTERVAL_SEC = 60;
+        if (now_sec - last >= SYNC_INTERVAL_SEC) {
             m_last_sync_ts.store(now_sec, std::memory_order_relaxed);
             try {
                 net::io_context sync_ioc;
@@ -384,7 +388,14 @@ private:
                 sync_rest.set_contracts(m_contracts);
                 m_pos_mgr.sync_positions_with_exchange(sync_rest, m_orders_executed);
                 m_pos_mgr.fetch_real_balance(sync_rest);
-                spdlog::info("[Periodic] Position sync + balance refresh done");
+
+                // Update balance sync timestamp (epoch seconds)
+                m_last_balance_sync.store(
+                    static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count()),
+                    std::memory_order_relaxed);
+
+                spdlog::info("[Periodic] Position sync + balance refresh done (interval={}s)", SYNC_INTERVAL_SEC);
             } catch (const std::exception& e) {
                 spdlog::warn("[Periodic] Sync failed: {}", e.what());
             }
@@ -913,6 +924,7 @@ private:
     std::unordered_map<size_t, int64_t> m_recent_fingerprints;  // fingerprint -> timestamp_ns
 
     std::atomic<int64_t> m_last_sync_ts{0};  // epoch seconds of last position sync
+    std::atomic<int64_t> m_last_balance_sync{0};  // epoch seconds of last balance sync
 
     // Worker heartbeat watchdog
     std::atomic<int64_t> m_worker_heartbeats[MAX_WORKERS]{};

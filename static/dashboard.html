@@ -525,9 +525,10 @@ body {
 <!-- ==================== MAIN STATS ROW (6 cards) ==================== -->
 <div class="stats-grid">
     <div class="stat-card">
-        <div class="label">잔고 (USDT)</div>
+        <div class="label">잔고 (USDT) <span id="balanceSyncDot" title="동기화 상태" style="font-size:8px;vertical-align:middle">⬤</span></div>
         <div class="value" id="balance">-</div>
         <div class="sub" id="balanceChange">-</div>
+        <div class="sub" id="balanceSync" style="font-size:10px;color:var(--text-muted);margin-top:2px">-</div>
     </div>
     <div class="stat-card">
         <div class="label">총 손익</div>
@@ -1047,6 +1048,23 @@ async function updateStats() {
     // Total Trades
     document.getElementById('totalTrades').textContent = d.total_trades || 0;
     document.getElementById('peakBalance').textContent = 'Peak: ' + fmt(d.peak_balance);
+
+    // Balance sync info
+    const syncTs = d.last_balance_sync || 0;
+    const syncDot = document.getElementById('balanceSyncDot');
+    const syncEl = document.getElementById('balanceSync');
+    if (syncTs > 0) {
+        const ago = Math.floor(Date.now()/1000) - syncTs;
+        const agoStr = ago < 60 ? ago + '초 전' : Math.floor(ago/60) + '분 전';
+        syncEl.textContent = '동기화: ' + agoStr;
+        syncDot.style.color = ago < 120 ? 'var(--green)' : ago < 300 ? 'var(--yellow)' : 'var(--red)';
+        syncDot.title = ago < 120 ? '실시간 동기화' : ago < 300 ? '동기화 지연' : '동기화 오류';
+    } else {
+        syncEl.textContent = 'WS 대기중...';
+        syncDot.style.color = 'var(--text-muted)';
+    }
+    const wsEl = d.ws_connected ? '🟢 WS' : '🔴 REST';
+    syncEl.textContent += ' | ' + wsEl;
 
     // Shadow mode
     if (d.shadow_mode) document.getElementById('shadowBadge').style.display = '';
