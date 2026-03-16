@@ -238,16 +238,23 @@ public:
     }
 
     [[nodiscard]] nlohmann::json get_stats() const {
-        auto stats = m_trade_rec.get_stats(
-            [this]() -> size_t { std::lock_guard lock(m_pos_mtx); return m_positions.size(); }(),
-            m_orders_executed.load(), m_risk_skips.load(), m_trading.shadow_mode);
-        stats["last_balance_sync"] = m_last_balance_sync.load(std::memory_order_relaxed);
-        stats["ws_connected"] = m_ws_client ? true : false;
+        // NOTE: m_pos_mtx를 한 번만 잡아서 deadlock 방지
+        // trade_rec.get_stats() 내부에서도 m_pos_mtx를 잡으므로,
+        // 여기서 미리 equity/uPnL/positions 크기를 복사한 후 호출
+        size_t pos_count;
+        double equity_snap, upnl_snap;
         {
             std::lock_guard lock(m_pos_mtx);
-            stats["equity"] = std::round(m_equity * 100.0) / 100.0;
-            stats["unrealized_pnl"] = std::round(m_unrealized_pnl * 10000.0) / 10000.0;
+            pos_count = m_positions.size();
+            equity_snap = m_equity;
+            upnl_snap = m_unrealized_pnl;
         }
+        auto stats = m_trade_rec.get_stats(
+            pos_count, m_orders_executed.load(), m_risk_skips.load(), m_trading.shadow_mode);
+        stats["last_balance_sync"] = m_last_balance_sync.load(std::memory_order_relaxed);
+        stats["ws_connected"] = m_ws_client ? true : false;
+        stats["equity"] = std::round(equity_snap * 100.0) / 100.0;
+        stats["unrealized_pnl"] = std::round(upnl_snap * 10000.0) / 10000.0;
         return stats;
     }
 
