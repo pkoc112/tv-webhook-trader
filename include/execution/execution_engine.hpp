@@ -108,6 +108,12 @@ public:
             m_positions = std::move(loaded.positions);
             m_trades = std::move(loaded.trades);
             m_orders_executed.store(loaded.orders_executed, std::memory_order_relaxed);
+            // m_next_oid를 타임스탬프 기반으로 재초기화 (재시작 시 clientOid 중복 방지)
+            auto ts_oid = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count()) * 1000;
+            m_next_oid.store(ts_oid, std::memory_order_relaxed);
+            spdlog::info("[Exec] OID base set to {} (timestamp-based)", ts_oid);
             m_port_risk.update_balance(m_balance);
 
             if (!m_trades.empty()) {
@@ -1144,7 +1150,10 @@ private:
 
     std::vector<std::thread> m_workers;
     std::atomic<bool> m_running{false};
-    std::atomic<uint64_t> m_next_oid{1};
+    std::atomic<uint64_t> m_next_oid{
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count()) * 1000
+    };
 
     std::atomic<uint64_t> m_orders_executed{0};
     std::atomic<uint64_t> m_orders_rejected{0};
