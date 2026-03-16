@@ -1037,14 +1037,16 @@ async function updateStats() {
     const d = await fetchJson('/api/stats');
     if (!d) return;
 
-    // Balance — available(가용잔고) 고정 표시, equity는 서브
+    // Balance — equity(총자산)을 메인에, available은 서브로
     const available = d.balance || 0;
-    const equity = d.equity || available;
+    const equity = d.equity > 0 ? d.equity : available;
     const uPnL = d.unrealized_pnl || 0;
-    document.getElementById('balance').textContent = fmt(available);
+    // 메인 표시: equity(총자산) = available + 마진 + uPnL
+    document.getElementById('balance').textContent = fmt(equity);
     const changeEl = document.getElementById('balanceChange');
     const uPnLStr = (uPnL >= 0 ? '+' : '') + uPnL.toFixed(4);
-    changeEl.innerHTML = '총자산: ' + fmt(equity) +
+    const roiPct = equity > 0 ? ((equity / 100 - 1) * 100).toFixed(2) : '0.00';
+    changeEl.innerHTML = '+' + roiPct + '%' +
         ' | <span style="color:' + (uPnL >= 0 ? 'var(--green)' : 'var(--red)') +
         '">uPnL: ' + uPnLStr + '</span>';
     changeEl.className = 'sub';

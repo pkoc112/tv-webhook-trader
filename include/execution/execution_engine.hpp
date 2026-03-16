@@ -293,8 +293,20 @@ private:
         net::io_context ioc;
         BitgetRestClient rest(ioc, m_auth, m_rest_config);
 
-        // 실제 Bitget 잔고 조회
-        m_pos_mgr.fetch_real_balance(rest);
+        // 실제 Bitget 잔고 조회 — available(가용잔고)로 m_balance 초기화
+        auto bal_init = m_pos_mgr.fetch_real_balance(rest);
+        if (bal_init.ok) {
+            std::lock_guard lock(m_pos_mtx);
+            if (bal_init.available > 0) {
+                m_balance = bal_init.available;
+            }
+            if (bal_init.equity > 0) {
+                m_equity = bal_init.equity;
+            }
+            m_unrealized_pnl = bal_init.unrealized_pnl;
+            spdlog::info("[Exec] Init balance: available={:.2f} equity={:.2f} uPnL={:.2f}",
+                m_balance, m_equity, m_unrealized_pnl);
+        }
 
         // 거래소 포지션과 동기화 (ghost position 제거)
         m_pos_mgr.sync_positions_with_exchange(rest, m_orders_executed);
