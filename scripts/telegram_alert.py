@@ -52,26 +52,18 @@ logging.basicConfig(
 log = logging.getLogger("tg-bot")
 
 # ---------------------------------------------------------------------------
-# Patterns to match
+# Patterns to match (실제 체결/에러만)
 # ---------------------------------------------------------------------------
 IMPORTANT_PATTERNS = [
-    re.compile(r"\[SFX\]",        re.IGNORECASE),
-    re.compile(r"\bENTRY\b"),
-    re.compile(r"\bTP\d?\b"),
-    re.compile(r"\bSL\b"),
-    re.compile(r"\bOK\b.*sz="),
-    re.compile(r"\bSKIP\b"),
-    re.compile(r"\bRISK\b"),
-    re.compile(r"\bFAIL\b"),
-    re.compile(r"\bSHADOW\b"),
-    re.compile(r"\bORDER\b",      re.IGNORECASE),
-    re.compile(r"\bFILLED\b",     re.IGNORECASE),
-    re.compile(r"\berror\b",      re.IGNORECASE),
-    re.compile(r"CIRCUIT.?BREAKER", re.IGNORECASE),
-    re.compile(r"TPSL fail"),
-    re.compile(r"\[QUEUE\] Full"),
-    re.compile(r"CLOSE"),
-    re.compile(r"ReEntry",        re.IGNORECASE),
+    re.compile(r"\bOK\b.*sz="),              # 실제 진입 체결
+    re.compile(r"TP\d?\s+closed"),            # TP 부분청산 체결
+    re.compile(r"SL closed"),                 # SL 청산 체결
+    re.compile(r"EMERGENCY CLOSE"),           # 긴급 청산
+    re.compile(r"WS close"),                  # WS 자동 청산
+    re.compile(r"WS.*Auto-removed"),          # WS 포지션 제거
+    re.compile(r"\bFAIL\b"),                  # 주문 실패
+    re.compile(r"\berror\b", re.IGNORECASE),  # 에러
+    re.compile(r"CIRCUIT.?BREAKER", re.IGNORECASE),  # 서킷브레이커
 ]
 
 def is_important(line: str) -> bool:
@@ -82,36 +74,22 @@ def is_important(line: str) -> bool:
 # ---------------------------------------------------------------------------
 def classify(line: str) -> str:
     lo = line.upper()
-    if "FAIL" in lo or "ERROR" in lo or "TPSL FAIL" in lo:
+    if "FAIL" in lo or "ERROR" in lo:
         return "\u26a0\ufe0f"
     if "CIRCUIT" in lo and "BREAKER" in lo:
         return "\U0001f6a8"
-    if "SKIP" in lo or "RISK" in lo:
-        return "\u26d4"
-    if "CLOSE" in lo:
-        return "\U0001f4a5"
-    if " SL " in lo:
+    if "EMERGENCY" in lo:
+        return "\U0001f6a8"
+    if "SL CLOSED" in lo or "WS CLOSE" in lo:
         return "\U0001f534"
-    if "TP" in lo and any(c.isdigit() for c in lo[lo.index("TP"):lo.index("TP")+4]):
+    if "TP" in lo and "CLOSED" in lo:
         return "\U0001f3af"
-    if "ENTRY" in lo or "OK" in lo or "SHADOW" in lo:
+    if "OK" in lo and "SZ=" in lo:
         if "BUY" in lo or "LONG" in lo:
             return "\U0001f7e2"
         if "SELL" in lo or "SHORT" in lo:
             return "\U0001f534"
         return "\U0001f4e8"
-    if "REENTRY" in lo:
-        return "\U0001f504"
-    if "[SFX]" in line:
-        if "buy" in line.lower():
-            return "\U0001f7e2"
-        if "sell" in line.lower():
-            return "\U0001f534"
-        return "\U0001f4e8"
-    if "ORDER" in lo or "FILLED" in lo:
-        return "\U0001f4b0"
-    if "QUEUE" in lo and "FULL" in lo:
-        return "\u26a0\ufe0f"
     return "\U0001f4ac"
 
 def format_line(line: str) -> str:
