@@ -839,6 +839,9 @@ private:
 
             spdlog::info("[W-{}] OK {} {} sz={:.6f} exid={}",
                 wid, sig.action, sig.symbol, sig.size, resp.exchange_order_id);
+            spdlog::info("[TRADE] ENTRY {} {} {}x @ {:.4f} ${:.2f} TP1={:.4f} SL={:.4f}",
+                (sig.action == "buy" ? "LONG" : "SHORT"), sig.symbol, leverage,
+                sig.price, sz.usdt_amount, sig.tp1, sig.sl);
             m_alerts.info("TRADE", "ENTRY " + sig.action + " " + sig.symbol +
                 " sz=" + std::to_string(sig.size).substr(0,8) + " lev=" + std::to_string(leverage) + "x",
                 sig.symbol);
@@ -849,26 +852,15 @@ private:
                 m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
             }
 
-            // Default TP/SL 주입: 학습된 값 또는 기본값 (1.5%/1%)
-            if (!sig.has_tp1() && sig.price > 0) {
-                double tp_pct = learn_dec.tp_pct;  // L2 학습값 또는 기본 1.5%
-                if (sig.action == "buy")
-                    sig.tp1 = sig.price * (1.0 + tp_pct);
-                else
-                    sig.tp1 = sig.price * (1.0 - tp_pct);
-                spdlog::info("[W-{}] TP1 injected: {:.4f} ({}%)", wid, sig.tp1, tp_pct * 100.0);
+            // TP/SL 처리: 시그널에 TP/SL 가격이 있을 때만 거래소에 설정
+            // TradingView에서 별도 TP/SL 시그널을 보내므로, 기본값 주입 안 함
+            if (sig.has_tp1() || sig.has_sl()) {
+                spdlog::info("[W-{}] Signal TP/SL provided: TP1={:.4f} SL={:.4f} — setting on exchange",
+                    wid, sig.tp1, sig.sl);
+                set_sfx_tpsl(wid, rest, sig);
+            } else {
+                spdlog::info("[W-{}] No TP/SL in signal — relying on TV TP/SL signals", wid);
             }
-            if (!sig.has_sl() && sig.price > 0) {
-                double sl_pct = learn_dec.sl_pct;  // L2 학습값 또는 기본 1%
-                if (sig.action == "buy")
-                    sig.sl = sig.price * (1.0 - sl_pct);
-                else
-                    sig.sl = sig.price * (1.0 + sl_pct);
-                spdlog::info("[W-{}] SL injected: {:.4f} ({}%)", wid, sig.sl, sl_pct * 100.0);
-            }
-
-            // TP/SL 설정 (재시도 + 실패 시 긴급 청산)
-            set_sfx_tpsl(wid, rest, sig);
         } else {
             m_orders_rejected.fetch_add(1);
             spdlog::error("[W-{}] FAIL: err={} {}", wid, resp.error_code,
@@ -941,6 +933,8 @@ private:
                     m_balance += pnl;
                     if (m_balance > m_peak_balance) m_peak_balance = m_balance;
                     m_positions.erase(it);
+                    spdlog::info("[TRADE] {} {} {:.4f} @ {:.4f} (100%)",
+                        sig.tp_level, sig.symbol, pnl, exit_price);
                     m_alerts.info("TRADE", sig.tp_level + " " + sig.symbol +
                         " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
                 } else {
@@ -959,6 +953,8 @@ private:
                     m_balance += pnl;
                     if (m_balance > m_peak_balance) m_peak_balance = m_balance;
                     pos.quantity -= close_qty;
+                    spdlog::info("[TRADE] {} {} {:.4f} @ {:.4f} ({:.0f}%)",
+                        sig.tp_level, sig.symbol, pnl, exit_price, close_ratio * 100);
                     if (pos.quantity <= 0) {
                         m_positions.erase(it);
                     }
@@ -1023,6 +1019,8 @@ private:
                 if (m_balance > m_peak_balance) m_peak_balance = m_balance;
                 m_positions.erase(it);
                 m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
+                spdlog::info("[TRADE] SL {} {:.4f} @ {:.4f}",
+                    sig.symbol, pnl, exit_price);
                 m_alerts.warn("TRADE", "SL " + sig.symbol +
                     " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
             }

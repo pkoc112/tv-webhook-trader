@@ -55,12 +55,8 @@ log = logging.getLogger("tg-bot")
 # Patterns to match (실제 체결/에러만)
 # ---------------------------------------------------------------------------
 IMPORTANT_PATTERNS = [
-    re.compile(r"\bOK\b.*sz="),              # 실제 진입 체결
-    re.compile(r"TP\d?\s+closed"),            # TP 부분청산 체결
-    re.compile(r"SL closed"),                 # SL 청산 체결
+    re.compile(r"\[TRADE\]"),                 # 구조화된 거래 이벤트
     re.compile(r"EMERGENCY CLOSE"),           # 긴급 청산
-    re.compile(r"WS close"),                  # WS 자동 청산
-    re.compile(r"WS.*Auto-removed"),          # WS 포지션 제거
     re.compile(r"\bFAIL\b"),                  # 주문 실패
     re.compile(r"\berror\b", re.IGNORECASE),  # 에러
     re.compile(r"CIRCUIT.?BREAKER", re.IGNORECASE),  # 서킷브레이커
@@ -70,32 +66,67 @@ def is_important(line: str) -> bool:
     return any(p.search(line) for p in IMPORTANT_PATTERNS)
 
 # ---------------------------------------------------------------------------
-# Classify & decorate
+# [TRADE] 로그 → 한국어 문장 변환
 # ---------------------------------------------------------------------------
-def classify(line: str) -> str:
-    lo = line.upper()
-    if "FAIL" in lo or "ERROR" in lo:
-        return "\u26a0\ufe0f"
-    if "CIRCUIT" in lo and "BREAKER" in lo:
-        return "\U0001f6a8"
-    if "EMERGENCY" in lo:
-        return "\U0001f6a8"
-    if "SL CLOSED" in lo or "WS CLOSE" in lo:
-        return "\U0001f534"
-    if "TP" in lo and "CLOSED" in lo:
-        return "\U0001f3af"
-    if "OK" in lo and "SZ=" in lo:
-        if "BUY" in lo or "LONG" in lo:
-            return "\U0001f7e2"
-        if "SELL" in lo or "SHORT" in lo:
-            return "\U0001f534"
-        return "\U0001f4e8"
-    return "\U0001f4ac"
+RE_ENTRY = re.compile(
+    r'\[TRADE\] ENTRY (LONG|SHORT) (\w+) (\d+)x @ ([\d.]+) \$([\d.]+) TP1=([\d.]+) SL=([\d.]+)')
+RE_TP = re.compile(
+    r'\[TRADE\] (TP\d) (\w+) ([-\d.]+) @ ([\d.]+) \((\d+)%\)')
+RE_SL = re.compile(
+    r'\[TRADE\] SL (\w+) ([-\d.]+) @ ([\d.]+)')
 
 def format_line(line: str) -> str:
     m = re.match(r"^.*?tv-webhook-trader\[\d+\]:\s*(.+)$", line)
     msg = m.group(1) if m else line.strip()
-    emoji = classify(msg)
+
+    # 진입 체결
+    m = RE_ENTRY.search(msg)
+    if m:
+        side, sym, lev, price, usd, tp1, sl = m.groups()
+        sym = sym.replace("USDT", "")
+        side_kr = "\ub871" if side == "LONG" else "\uc20f"
+        emoji = "\U0001f7e2" if side == "LONG" else "\U0001f534"
+        tp1_s = tp1 if float(tp1) > 0 else "-"
+        sl_s = sl if float(sl) > 0 else "-"
+        return (
+            f"{emoji} <b>{sym}</b> {side_kr} \uc9c4\uc785 {lev}x @ {price}\n"
+            f"\U0001f4b0 ${usd} | TP1: {tp1_s} | SL: {sl_s}"
+        )
+
+    # TP 익절 (부분/전체)
+    m = RE_TP.search(msg)
+    if m:
+        tp, sym, pnl, price, pct = m.groups()
+        sym = sym.replace("USDT", "")
+        pnl_f = float(pnl)
+        emoji = "\U0001f3af" if pnl_f >= 0 else "\u26a0\ufe0f"
+        pnl_kr = "\uc775\uc808" if pnl_f >= 0 else "\uc190\uc808"
+        return (
+            f"{emoji} <b>{sym}</b> {tp} {pnl_kr} ({pct}%) @ {price}\n"
+            f"\U0001f4b5 PnL: {pnl_f:+.4f} USDT"
+        )
+
+    # SL 손절
+    m = RE_SL.search(msg)
+    if m:
+        sym, pnl, price = m.groups()
+        sym = sym.replace("USDT", "")
+        pnl_f = float(pnl)
+        return (
+            f"\U0001f534 <b>{sym}</b> \uc190\uc808 @ {price}\n"
+            f"\U0001f4b5 PnL: {pnl_f:+.4f} USDT"
+        )
+
+    # FAIL/ERROR/EMERGENCY 등 기타
+    lo = msg.upper()
+    if "EMERGENCY" in lo:
+        emoji = "\U0001f6a8"
+    elif "CIRCUIT" in lo and "BREAKER" in lo:
+        emoji = "\U0001f6a8"
+    elif "FAIL" in lo or "ERROR" in lo:
+        emoji = "\u26a0\ufe0f"
+    else:
+        emoji = "\U0001f4ac"
     return f"{emoji} <code>{msg}</code>"
 
 # ---------------------------------------------------------------------------
