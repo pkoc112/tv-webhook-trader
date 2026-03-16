@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <mutex>
 #include <cmath>
 #include <algorithm>
@@ -34,6 +35,30 @@
 #include "risk/symbol_scorer.hpp"  // TradeRecord
 
 namespace hft {
+
+// -- 시장 세션 정의 --
+enum class MarketSession { ASIA, EUROPE, US, OVERLAP_EU_US };
+
+inline MarketSession get_session(int hour_utc) {
+    // 아시아: 00-08 UTC (09-17 KST)
+    if (hour_utc >= 0 && hour_utc < 8) return MarketSession::ASIA;
+    // 유럽: 08-13 UTC
+    if (hour_utc >= 8 && hour_utc < 13) return MarketSession::EUROPE;
+    // EU+US 겹침: 13-17 UTC (변동성 최대)
+    if (hour_utc >= 13 && hour_utc < 17) return MarketSession::OVERLAP_EU_US;
+    // 미국: 17-24 UTC
+    return MarketSession::US;
+}
+
+inline std::string session_name(MarketSession s) {
+    switch (s) {
+        case MarketSession::ASIA: return "ASIA";
+        case MarketSession::EUROPE: return "EU";
+        case MarketSession::OVERLAP_EU_US: return "EU_US";
+        case MarketSession::US: return "US";
+    }
+    return "?";
+}
 
 // -- 심볼+TF별 학습 데이터 --
 struct SymbolLearnData {
@@ -59,10 +84,35 @@ struct SymbolLearnData {
     // L3: 시그널 품질 (시간대별)
     std::array<std::pair<int,int>, 24> hour_stats{};  // hour -> {wins, total}
 
+    // L3+: 세션별 성과 추적 (아시아/유럽/미국/겹침)
+    std::array<std::pair<int,int>, 4> session_stats{};  // session -> {wins, total}
+
     // L4: 포지션 사이징
     double avg_win_pct{0.0};
     double avg_loss_pct{0.0};
     double kelly_fraction{0.0};   // 계산된 Kelly 비율
+
+    // L5: 최근 N건 성과 (슬라이딩 윈도우)
+    static constexpr int RECENT_WINDOW = 10;
+    std::array<double, 10> recent_pnls{};  // 최근 10건 PnL 순환 버퍼
+    int recent_idx{0};                      // 다음 쓸 위치
+    int recent_count{0};                    // 채워진 수
+
+    double recent_avg_pnl() const {
+        if (recent_count == 0) return 0.0;
+        double sum = 0;
+        int n = std::min(recent_count, RECENT_WINDOW);
+        for (int i = 0; i < n; i++) sum += recent_pnls[i];
+        return sum / n;
+    }
+
+    double recent_win_rate() const {
+        if (recent_count == 0) return 0.5;
+        int n = std::min(recent_count, RECENT_WINDOW);
+        int w = 0;
+        for (int i = 0; i < n; i++) if (recent_pnls[i] > 0) w++;
+        return (double)w / n;
+    }
 };
 
 // -- 학습 판단 결과 --
@@ -169,7 +219,7 @@ public:
             recalc_optimal_tpsl(d);
         }
 
-        // --- L3: 시간대별 통계 ---
+        // --- L3: 시간대별 통계 + 세션별 추적 ---
         {
             auto now = std::chrono::system_clock::now();
             auto t = std::chrono::system_clock::to_time_t(now);
@@ -182,7 +232,18 @@ public:
             int hour = tm.tm_hour;
             d.hour_stats[hour].second++;
             if (is_win) d.hour_stats[hour].first++;
+
+            // 세션별 통계
+            auto session = get_session(hour);
+            int si = static_cast<int>(session);
+            d.session_stats[si].second++;
+            if (is_win) d.session_stats[si].first++;
         }
+
+        // --- L5: 최근 N건 슬라이딩 윈도우 ---
+        d.recent_pnls[d.recent_idx] = tr.pnl;
+        d.recent_idx = (d.recent_idx + 1) % SymbolLearnData::RECENT_WINDOW;
+        d.recent_count = std::min(d.recent_count + 1, SymbolLearnData::RECENT_WINDOW);
 
         // --- L4: Kelly 재계산 ---
         recalc_kelly(d);
@@ -279,6 +340,51 @@ public:
             dec.size_multiplier *= std::clamp(dec.signal_quality * 1.5, 0.5, 1.2);
         }
 
+        // [L5] 연속 손실 시 점진적 사이즈 축소 (쿨다운 전에 선제적으로)
+        if (d.consecutive_losses >= 2) {
+            // 2연패: 70%, 3연패: 50%, 4연패+: 30%
+            double streak_mult = std::max(0.3, 1.0 - d.consecutive_losses * 0.2);
+            dec.size_multiplier *= streak_mult;
+            spdlog::debug("[LEARNER] Streak penalty: streak={} mult={:.2f}",
+                d.consecutive_losses, streak_mult);
+        }
+
+        // [L5] 최근 10건 성과 기반 추가 보정
+        if (d.recent_count >= 5) {
+            double rwr = d.recent_win_rate();
+            if (rwr < 0.3) {
+                // 최근 10건 중 승률 30% 미만 → 사이즈 50%
+                dec.size_multiplier *= 0.5;
+                spdlog::debug("[LEARNER] Recent WR penalty: rwr={:.1f}% mult=0.5", rwr * 100);
+            } else if (rwr > 0.6) {
+                // 최근 10건 중 승률 60% 초과 → 사이즈 120%
+                dec.size_multiplier *= 1.2;
+            }
+        }
+
+        // [L3+] 세션별 성과 필터
+        if (current_hour_utc >= 0) {
+            auto session = get_session(current_hour_utc);
+            int si = static_cast<int>(session);
+            auto& [sw, st] = d.session_stats[si];
+            if (st >= 5) {  // 해당 세션에서 5건 이상 거래 시
+                double session_wr = (double)sw / st;
+                if (session_wr < 0.2) {
+                    // 이 세션에서 승률 20% 미만 → 진입 거부
+                    dec.allowed = false;
+                    dec.skip_reason = "BAD_SESSION(" + session_name(session) +
+                        " wr=" + std::to_string(session_wr * 100).substr(0,5) + "%)";
+                    return dec;
+                } else if (session_wr < 0.35) {
+                    // 35% 미만 → 사이즈 축소
+                    dec.size_multiplier *= 0.6;
+                }
+            }
+        }
+
+        // 최종 사이즈 배율 클램프
+        dec.size_multiplier = std::clamp(dec.size_multiplier, 0.2, 2.0);
+
         return dec;
     }
 
@@ -314,6 +420,24 @@ public:
             entry["optimal_tp_pct"] = std::round(d->optimal_tp_pct * 10000.0) / 100.0;  // as %
             entry["optimal_sl_pct"] = std::round(d->optimal_sl_pct * 10000.0) / 100.0;
             entry["kelly_fraction"] = std::round(d->kelly_fraction * 1000.0) / 1000.0;
+
+            // 세션별 성과
+            nlohmann::json sess_json;
+            const char* snames[] = {"ASIA", "EU", "EU_US", "US"};
+            for (int i = 0; i < 4; i++) {
+                auto& [sw, st] = d->session_stats[i];
+                if (st > 0) {
+                    sess_json[snames[i]] = {
+                        {"wins", sw}, {"total", st},
+                        {"win_rate", std::round((double)sw / st * 1000.0) / 10.0}
+                    };
+                }
+            }
+            entry["sessions"] = sess_json;
+
+            // 최근 윈도우
+            entry["recent_win_rate"] = std::round(d->recent_win_rate() * 1000.0) / 10.0;
+            entry["recent_avg_pnl"] = std::round(d->recent_avg_pnl() * 10000.0) / 10000.0;
 
             arr.push_back(entry);
         }
@@ -366,11 +490,11 @@ private:
         }
     }
 
-    // ── L3: 시그널 품질 계산 (이제 TF는 키에 포함됨) ──
+    // ── L3: 시그널 품질 계산 (시간대+세션+최근윈도우 통합) ──
     double calc_signal_quality(const SymbolLearnData& d, int hour_utc) const {
         double base_wr = d.total_trades > 0 ? (double)d.wins / d.total_trades : 0.5;
 
-        // 시간대별 승률 가중치 (30%)
+        // 시간대별 승률 가중치 (20%)
         double hour_quality = base_wr;
         if (hour_utc >= 0 && hour_utc < 24) {
             auto& [hw, ht] = d.hour_stats[hour_utc];
@@ -379,20 +503,41 @@ private:
             }
         }
 
-        // EMA 트렌드 가중치 (35%) — 최근 수익 경향
+        // 세션별 승률 가중치 (15%) — 아시아/유럽/미국 세션
+        double session_quality = base_wr;
+        if (hour_utc >= 0) {
+            auto session = get_session(hour_utc);
+            int si = static_cast<int>(session);
+            auto& [sw, st] = d.session_stats[si];
+            if (st >= 3) {
+                session_quality = (double)sw / st;
+            }
+        }
+
+        // EMA 트렌드 가중치 (25%) — 전체 최근 수익 경향
         double trend_quality = 0.5;
         if (d.total_trades >= 5) {
             trend_quality = std::clamp(0.5 + d.ema_pnl * 50.0, 0.0, 1.0);
         }
 
-        // 연패 페널티 (35%)
+        // 최근 윈도우 승률 가중치 (20%) — 최근 10건
+        double recent_quality = 0.5;
+        if (d.recent_count >= 3) {
+            recent_quality = d.recent_win_rate();
+        }
+
+        // 연패 페널티 (20%)
         double streak_quality = 1.0;
         if (d.consecutive_losses >= 2) {
             streak_quality = std::max(0.1, 1.0 - d.consecutive_losses * 0.15);
         }
 
-        // 복합 품질 = hour(30%) + trend(35%) + streak(35%)
-        double quality = hour_quality * 0.30 + trend_quality * 0.35 + streak_quality * 0.35;
+        // 복합 품질 = hour(20%) + session(15%) + trend(25%) + recent(20%) + streak(20%)
+        double quality = hour_quality * 0.20
+                       + session_quality * 0.15
+                       + trend_quality * 0.25
+                       + recent_quality * 0.20
+                       + streak_quality * 0.20;
         return std::clamp(quality, 0.0, 1.0);
     }
 
@@ -417,14 +562,17 @@ private:
         }
     }
 
-    // ── L1: 필터 업데이트 ──
+    // ── L1: 필터 업데이트 (연패 기반 점진적 쿨다운) ──
     void update_filters(SymbolLearnData& d) {
         if (d.consecutive_losses >= m_cooldown_streak) {
             auto now_epoch = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
-            d.cooldown_until = now_epoch + m_cooldown_minutes * 60;
-            spdlog::warn("[LEARNER] COOLDOWN: streak={} → {}min pause",
-                d.consecutive_losses, m_cooldown_minutes);
+            // 연패 수에 따라 쿨다운 시간 증가: 3연패=30분, 4연패=60분, 5연패=120분
+            int extra_factor = std::min(d.consecutive_losses - m_cooldown_streak, 3);
+            int cooldown_min = m_cooldown_minutes * (1 << extra_factor);  // 2^n 배
+            d.cooldown_until = now_epoch + cooldown_min * 60;
+            spdlog::warn("[LEARNER] COOLDOWN: streak={} → {}min pause (progressive)",
+                d.consecutive_losses, cooldown_min);
         }
 
         if (d.total_trades >= m_blacklist_min) {
@@ -489,6 +637,23 @@ private:
                     }
                 }
 
+                // Session stats
+                auto& sess = s["session_stats"];
+                const char* snames[] = {"ASIA", "EU", "EU_US", "US"};
+                for (int i = 0; i < 4; i++) {
+                    if (d.session_stats[i].second > 0) {
+                        sess[snames[i]] = {{"w", d.session_stats[i].first}, {"t", d.session_stats[i].second}};
+                    }
+                }
+
+                // Recent window
+                s["recent_idx"] = d.recent_idx;
+                s["recent_count"] = d.recent_count;
+                auto& rpnls = s["recent_pnls"];
+                for (int i = 0; i < std::min(d.recent_count, SymbolLearnData::RECENT_WINDOW); i++) {
+                    rpnls.push_back(d.recent_pnls[i]);
+                }
+
                 entries[key] = s;
             }
 
@@ -533,6 +698,31 @@ private:
                 }
             }
         }
+
+        // Session stats
+        if (s.contains("session_stats")) {
+            const std::pair<const char*, int> smap[] = {
+                {"ASIA", 0}, {"EU", 1}, {"EU_US", 2}, {"US", 3}
+            };
+            for (auto& [name, idx] : smap) {
+                if (s["session_stats"].contains(name)) {
+                    auto& st = s["session_stats"][name];
+                    d.session_stats[idx] = {st.value("w", 0), st.value("t", 0)};
+                }
+            }
+        }
+
+        // Recent window
+        d.recent_idx = s.value("recent_idx", 0);
+        d.recent_count = s.value("recent_count", 0);
+        if (s.contains("recent_pnls") && s["recent_pnls"].is_array()) {
+            int i = 0;
+            for (auto& v : s["recent_pnls"]) {
+                if (i >= SymbolLearnData::RECENT_WINDOW) break;
+                d.recent_pnls[i++] = v.get<double>();
+            }
+        }
+
         return d;
     }
 
