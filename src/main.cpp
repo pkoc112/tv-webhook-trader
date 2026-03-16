@@ -148,7 +148,7 @@ int main(int argc, char* argv[]) {
         std::signal(SIGTERM, signal_handler);
 
         // -- 1. 시그널 큐 --
-        hft::SPSCQueue<hft::WebhookSignal> signal_queue(8192);
+        hft::MPSCQueue<hft::WebhookSignal> signal_queue(8192);
 
         // -- 2. Bitget 인증 --
         hft::BitgetAuth auth(
@@ -214,10 +214,21 @@ int main(int argc, char* argv[]) {
         spdlog::info("  SymbolLearner: L1-L4 adaptive learning engine");
 
         // -- 6. 실행 엔진 (모든 리스크 모듈 연결) --
-        hft::ExecutionEngine exec_engine(
-            signal_queue, auth, rest_config, risk_mgr,
-            scorer, fee_analyzer, position_sizer, portfolio_risk, state_store,
-            alert_mgr, symbol_learner, trading_config);
+        hft::EngineConfig engine_cfg{
+            .signal_queue    = signal_queue,
+            .auth            = auth,
+            .rest_config     = rest_config,
+            .risk_mgr        = risk_mgr,
+            .scorer          = scorer,
+            .fee_analyzer    = fee_analyzer,
+            .sizer           = position_sizer,
+            .portfolio_risk  = portfolio_risk,
+            .state_store     = state_store,
+            .alerts          = alert_mgr,
+            .learner         = symbol_learner,
+            .trading_config  = trading_config
+        };
+        hft::ExecutionEngine exec_engine(engine_cfg);
         exec_engine.start();
 
         // -- 7. 대시보드 서버 (HTTP) --
@@ -258,7 +269,9 @@ int main(int argc, char* argv[]) {
 
         std::string static_dir = config.value("static_dir", "static");
         std::filesystem::create_directories(static_dir);
-        hft::DashboardServer dashboard(dash_port, static_dir, dash_cb);
+        std::string dash_token = config.value("dashboard_token", "");
+        std::string dash_cors_origin = config.value("dashboard_cors_origin", "");
+        hft::DashboardServer dashboard(dash_port, static_dir, dash_cb, dash_token, dash_cors_origin);
         dashboard.start();
         spdlog::info("Dashboard on port {}", dash_port);
 
@@ -279,7 +292,11 @@ int main(int argc, char* argv[]) {
         }
 
         if (wh_config.auth_token.empty() || wh_config.auth_token == "CHANGE_ME") {
-            spdlog::warn("WARNING: Using default/empty auth token!");
+            if (!trading_config.shadow_mode) {
+                spdlog::error("FATAL: Webhook auth token not configured. Set 'auth_token' in config.json");
+                return 1;
+            }
+            spdlog::warn("WARNING: Using default/empty auth token (shadow mode)");
         }
 
         auto on_signal = [&signal_queue](hft::WebhookSignal&& sig) {

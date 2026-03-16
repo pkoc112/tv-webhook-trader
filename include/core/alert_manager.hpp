@@ -14,6 +14,11 @@
 #include <deque>
 #include <nlohmann/json.hpp>
 
+// Windows defines ERROR as a macro — undefine to avoid conflict with AlertLevel::ERROR
+#ifdef ERROR
+#undef ERROR
+#endif
+
 namespace hft {
 
 enum class AlertLevel { INFO, WARN, ERROR, CRITICAL };

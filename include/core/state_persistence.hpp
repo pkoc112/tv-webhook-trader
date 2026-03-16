@@ -16,7 +16,9 @@
 #include <chrono>
 #include <cstdio>  // fflush, fileno
 
-#ifdef __linux__
+#ifdef _WIN32
+#include <io.h>      // _commit, _fileno
+#elif defined(__linux__)
 #include <unistd.h>  // fsync
 #endif
 
@@ -187,7 +189,10 @@ private:
             auto content = data.dump(2);
             std::fwrite(content.data(), 1, content.size(), fp);
             std::fflush(fp);
-#ifdef __linux__
+#ifdef _WIN32
+            // Windows: flush to disk
+            ::_commit(::_fileno(fp));
+#elif defined(__linux__)
             // fsync: 디스크에 물리적으로 기록 보장
             ::fsync(fileno(fp));
 #endif

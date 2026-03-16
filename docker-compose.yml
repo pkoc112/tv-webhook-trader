@@ -1,0 +1,12 @@
+version: "3.8"
+
+services:
+  trader:
+    build: .
+    ports:
+      - "8443:8443"
+      - "5000:5000"
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+    restart: unless-stopped

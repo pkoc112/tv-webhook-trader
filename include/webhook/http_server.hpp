@@ -24,6 +24,9 @@
 #include <string>
 #include <set>
 #include <atomic>
+#include <mutex>
+#include <map>
+#include <deque>
 
 #include "core/types.hpp"
 #include "core/spsc_queue.hpp"
@@ -65,17 +68,64 @@ inline std::string normalize_ip(const std::string& ip) {
     return ip;
 }
 
+// -- Per-IP rate limiter for webhook endpoint --
+class WebhookRateLimiter {
+public:
+    // Returns true if allowed, false if rate limited
+    bool check(const std::string& ip) {
+        std::lock_guard<std::mutex> lock(m_mtx);
+        auto now = std::chrono::steady_clock::now();
+        auto cutoff = now - std::chrono::seconds(60);
+
+        auto& timestamps = m_requests[ip];
+
+        // Remove entries older than 60 seconds
+        while (!timestamps.empty() && timestamps.front() < cutoff) {
+            timestamps.pop_front();
+        }
+
+        if (static_cast<int>(timestamps.size()) >= m_max_per_minute) {
+            return false;
+        }
+
+        timestamps.push_back(now);
+
+        // Periodic cleanup of stale IPs (every 100 checks)
+        if (++m_check_count % 100 == 0) {
+            for (auto it = m_requests.begin(); it != m_requests.end(); ) {
+                if (it->second.empty()) {
+                    it = m_requests.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+
+        return true;
+    }
+
+private:
+    std::mutex m_mtx;
+    std::map<std::string, std::deque<std::chrono::steady_clock::time_point>> m_requests;
+    int m_max_per_minute{30};
+    uint64_t m_check_count{0};
+};
+
 // -- SSL Session --
 class WebhookSession : public std::enable_shared_from_this<WebhookSession> {
 public:
     WebhookSession(beast::ssl_stream<beast::tcp_stream> stream,
                    std::shared_ptr<const WebhookConfig> config,
                    SignalCallback cb,
-                   std::atomic<uint64_t>& req_counter)
+                   std::atomic<uint64_t>& req_counter,
+                   WebhookRateLimiter& rate_limiter,
+                   std::string client_ip)
         : m_stream(std::move(stream))
         , m_config(std::move(config))
         , m_callback(std::move(cb))
-        , m_req_counter(req_counter) {}
+        , m_req_counter(req_counter)
+        , m_rate_limiter(rate_limiter)
+        , m_client_ip(std::move(client_ip)) {}
 
     void run() {
         beast::get_lowest_layer(m_stream).expires_after(std::chrono::seconds(10));
@@ -114,6 +164,12 @@ private:
         // POST /webhook only
         if (req.method() != http::verb::post || req.target() != "/webhook") {
             return send_response(http::status::not_found, R"({"error":"not found"})");
+        }
+
+        // Per-IP rate limiting
+        if (!m_rate_limiter.check(m_client_ip)) {
+            spdlog::warn("[HTTP] Rate limited IP: {}", m_client_ip);
+            return send_response(http::status::too_many_requests, R"({"error":"rate limited"})");
         }
 
         // 시그널 파싱
@@ -165,6 +221,8 @@ private:
     std::shared_ptr<const WebhookConfig> m_config;
     SignalCallback m_callback;
     std::atomic<uint64_t>& m_req_counter;
+    WebhookRateLimiter& m_rate_limiter;
+    std::string m_client_ip;
 };
 
 // -- Listener --
@@ -174,10 +232,11 @@ public:
                     tcp::endpoint ep,
                     std::shared_ptr<const WebhookConfig> config,
                     SignalCallback cb,
-                    std::atomic<uint64_t>& req_counter)
+                    std::atomic<uint64_t>& req_counter,
+                    WebhookRateLimiter& rate_limiter)
         : m_ioc(ioc), m_ctx(ctx), m_acceptor(ioc)
         , m_config(std::move(config)), m_callback(std::move(cb))
-        , m_req_counter(req_counter)
+        , m_req_counter(req_counter), m_rate_limiter(rate_limiter)
     {
         beast::error_code ec;
         m_acceptor.open(ep.protocol(), ec);
@@ -212,7 +271,8 @@ private:
                 } else {
                     auto session = std::make_shared<WebhookSession>(
                         beast::ssl_stream<beast::tcp_stream>(std::move(socket), self->m_ctx),
-                        self->m_config, self->m_callback, self->m_req_counter);
+                        self->m_config, self->m_callback, self->m_req_counter,
+                        self->m_rate_limiter, remote);
                     session->run();
                 }
 
@@ -226,6 +286,7 @@ private:
     std::shared_ptr<const WebhookConfig> m_config;
     SignalCallback m_callback;
     std::atomic<uint64_t>& m_req_counter;
+    WebhookRateLimiter& m_rate_limiter;
 };
 
 // -- 최상위 서버 클래스 --
@@ -248,7 +309,7 @@ public:
     void run(int threads = 8) {
         auto ep = tcp::endpoint(net::ip::make_address(m_config->bind_address), m_config->port);
         auto listener = std::make_shared<WebhookListener>(
-            m_ioc, m_ssl_ctx, ep, m_config, m_callback, m_total_requests);
+            m_ioc, m_ssl_ctx, ep, m_config, m_callback, m_total_requests, m_rate_limiter);
         listener->run();
 
         std::vector<std::thread> workers;
@@ -271,6 +332,7 @@ private:
     net::io_context m_ioc;
     ssl::context m_ssl_ctx;
     std::atomic<uint64_t> m_total_requests{0};
+    WebhookRateLimiter m_rate_limiter;
 };
 
 } // namespace hft

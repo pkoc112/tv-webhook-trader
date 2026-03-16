@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <mutex>
+#include <optional>
 #include <cmath>
 #include <algorithm>
 #include <numeric>
@@ -248,10 +249,11 @@ public:
         return it != m_scores.end() ? it->second.max_leverage : 10;
     }
 
-    [[nodiscard]] const SymbolScore* get_score(const std::string& symbol) const {
+    [[nodiscard]] std::optional<SymbolScore> get_score(const std::string& symbol) const {
         std::lock_guard lock(m_mtx);
         auto it = m_scores.find(symbol);
-        return it != m_scores.end() ? &it->second : nullptr;
+        if (it != m_scores.end()) return it->second;
+        return std::nullopt;
     }
 
     [[nodiscard]] bool needs_rescore() const {

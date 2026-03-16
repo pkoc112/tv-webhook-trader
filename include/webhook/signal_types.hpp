@@ -19,6 +19,7 @@
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
+#include <fmt/format.h>
 #include "core/types.hpp"
 
 namespace hft {
@@ -238,17 +239,13 @@ struct WebhookSignal {
 
     // -- 로그 출력 --
     [[nodiscard]] std::string to_log_string() const {
-        char buf[256];
-        int n = snprintf(buf, sizeof(buf), "[SFX] %s %s %s @ %.2f size=%.6f",
-            signal_type_str(sig_type), action.c_str(), symbol.c_str(), price, size);
-        std::string s(buf, n);
-        char tmp[64];
-        if (has_tp1()) { snprintf(tmp, sizeof(tmp), " TP1=%.2f", tp1); s += tmp; }
-        if (has_tp2()) { snprintf(tmp, sizeof(tmp), " TP2=%.2f", tp2); s += tmp; }
-        if (has_tp3()) { snprintf(tmp, sizeof(tmp), " TP3=%.2f", tp3); s += tmp; }
-        if (has_sl())  { snprintf(tmp, sizeof(tmp), " SL=%.2f", sl);   s += tmp; }
-        s += " dir=" + signal_direction + " rating=" + std::to_string(current_rating)
-           + " tf=" + timeframe;
+        auto s = fmt::format("[SFX] {} {} {} @ {:.2f} size={:.6f}",
+            signal_type_str(sig_type), action, symbol, price, size);
+        if (has_tp1()) s += fmt::format(" TP1={:.2f}", tp1);
+        if (has_tp2()) s += fmt::format(" TP2={:.2f}", tp2);
+        if (has_tp3()) s += fmt::format(" TP3={:.2f}", tp3);
+        if (has_sl())  s += fmt::format(" SL={:.2f}", sl);
+        s += fmt::format(" dir={} rating={} tf={}", signal_direction, current_rating, timeframe);
         return s;
     }
 

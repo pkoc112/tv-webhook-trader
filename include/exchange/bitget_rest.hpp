@@ -22,6 +22,7 @@
 #include <string>
 #include <optional>
 #include <mutex>
+#include <shared_mutex>
 #include <unordered_map>
 #include <cmath>
 
@@ -70,8 +71,7 @@ public:
         }
 
         // sizeMultiplier 정밀도에 맞춘 문자열 생성
-        auto it = m_contracts.find(sym_str);
-        double step = (it != m_contracts.end()) ? it->second.size_multiplier : 0.001;
+        double step = get_contract_field(sym_str, &ContractInfo::size_multiplier, 0.001);
         int decimals = 0;
         double s = step;
         while (s < 1.0 && decimals < 10) { s *= 10; ++decimals; }
@@ -120,11 +120,7 @@ public:
     bool place_tpsl(const std::string& symbol, const std::string& plan_type,
                     double trigger_price, double size, const std::string& hold_side) {
         // 가격 정밀도 맞추기 (pricePlace)
-        int pp = 4;
-        auto cit = m_contracts.find(symbol);
-        if (cit != m_contracts.end()) {
-            pp = cit->second.price_place;
-        }
+        int pp = get_contract_field(symbol, &ContractInfo::price_place, 4);
         char price_buf[32];
         std::snprintf(price_buf, sizeof(price_buf), "%.*f", pp, trigger_price);
 
@@ -204,8 +200,7 @@ public:
         if (rounded_qty < min_qty_val) rounded_qty = min_qty_val;
 
         // sizeMultiplier 정밀도에 맞춘 문자열
-        auto it = m_contracts.find(sym_str);
-        double step = (it != m_contracts.end()) ? it->second.size_multiplier : 0.001;
+        double step = get_contract_field(sym_str, &ContractInfo::size_multiplier, 0.001);
         int decimals = 0;
         double s = step;
         while (s < 1.0 && decimals < 10) { s *= 10; ++decimals; }
@@ -297,11 +292,13 @@ public:
 
     // 외부에서 사전 로드된 계약 정보 주입
     void set_contracts(const std::unordered_map<std::string, ContractInfo>& contracts) {
+        std::unique_lock lock(m_contracts_mtx);
         m_contracts = contracts;
     }
 
-    // 캐시된 계약 정보 반환
-    const std::unordered_map<std::string, ContractInfo>& get_contracts_cache() const {
+    // 캐시된 계약 정보 반환 (returns a copy for thread safety)
+    std::unordered_map<std::string, ContractInfo> get_contracts_cache() const {
+        std::shared_lock lock(m_contracts_mtx);
         return m_contracts;
     }
 
@@ -315,6 +312,7 @@ public:
                 return;
             }
             auto& data = j["data"];
+            std::unordered_map<std::string, ContractInfo> new_contracts;
             int count = 0;
             for (auto& c : data) {
                 std::string sym = c.value("symbol", "");
@@ -324,8 +322,12 @@ public:
                 ci.min_trade_num = std::stod(c.value("minTradeNum", "0.001"));
                 ci.price_place = std::stoi(c.value("pricePlace", "4"));
                 ci.price_end_step = std::stod(c.value("priceEndStep", "1"));
-                m_contracts[sym] = ci;
+                new_contracts[sym] = ci;
                 ++count;
+            }
+            {
+                std::unique_lock lock(m_contracts_mtx);
+                m_contracts = std::move(new_contracts);
             }
             spdlog::info("[REST] Loaded {} contract infos (sizeMultiplier)", count);
         } catch (const std::exception& e) {
@@ -333,12 +335,24 @@ public:
         }
     }
 
+    // Thread-safe lookup of a single contract field
+    template <typename T>
+    T get_contract_field(const std::string& symbol, T ContractInfo::*field, T default_val) const {
+        std::shared_lock lock(m_contracts_mtx);
+        auto it = m_contracts.find(symbol);
+        if (it != m_contracts.end()) return it->second.*field;
+        return default_val;
+    }
+
     // qty를 심볼의 sizeMultiplier에 맞게 반올림
     double round_qty(const std::string& symbol, double qty) const {
-        auto it = m_contracts.find(symbol);
         double step = 0.001;  // 기본값
-        if (it != m_contracts.end()) {
-            step = it->second.size_multiplier;
+        {
+            std::shared_lock lock(m_contracts_mtx);
+            auto it = m_contracts.find(symbol);
+            if (it != m_contracts.end()) {
+                step = it->second.size_multiplier;
+            }
         }
         if (step <= 0) step = 0.001;
         // 내림으로 반올림 (거래소 최소 단위에 맞춤)
@@ -348,6 +362,7 @@ public:
 
     // qty가 최소 주문 수량 이상인지 확인
     double get_min_qty(const std::string& symbol) const {
+        std::shared_lock lock(m_contracts_mtx);
         auto it = m_contracts.find(symbol);
         if (it != m_contracts.end()) {
             return it->second.min_trade_num;
@@ -487,7 +502,8 @@ private:
     std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> m_stream;
     bool m_connected{false};
 
-    // 심볼별 계약 정보 캐시
+    // 심볼별 계약 정보 캐시 (guarded by m_contracts_mtx)
+    mutable std::shared_mutex m_contracts_mtx;
     std::unordered_map<std::string, ContractInfo> m_contracts;
 };
 

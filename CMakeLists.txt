@@ -15,7 +15,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -flto -DNDEBUG")
     set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer")
 elseif(MSVC)
-    add_compile_options(/W4 /permissive-)
+    add_compile_options(/W4 /permissive- /bigobj)
     add_compile_definitions(_WIN32_WINNT=0x0A00)  # Windows 10+
     set(CMAKE_CXX_FLAGS_RELEASE "/O2 /DNDEBUG")
 endif()
@@ -58,3 +58,55 @@ target_link_libraries(backtest PRIVATE
 
 install(TARGETS ${PROJECT_NAME} backtest DESTINATION bin)
 install(DIRECTORY config/ DESTINATION etc/tv-webhook-trader)
+
+# ======== Unit Tests (Google Test) ========
+option(BUILD_TESTS "Build unit tests" ON)
+if(BUILD_TESTS)
+    FetchContent_Declare(googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.14.0
+        GIT_SHALLOW TRUE
+    )
+    # Prevent GoogleTest from overriding compiler/linker settings on Windows
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+
+    enable_testing()
+
+    set(TEST_LIBS
+        GTest::gtest_main
+        spdlog::spdlog fmt::fmt
+        nlohmann_json::nlohmann_json
+        Threads::Threads
+    )
+
+    # test_signal_parser
+    add_executable(test_signal_parser tests/test_signal_parser.cpp)
+    target_include_directories(test_signal_parser PRIVATE ${COMMON_INCLUDES})
+    target_link_libraries(test_signal_parser PRIVATE ${TEST_LIBS})
+    add_test(NAME test_signal_parser COMMAND test_signal_parser)
+
+    # test_position_sizer
+    add_executable(test_position_sizer tests/test_position_sizer.cpp)
+    target_include_directories(test_position_sizer PRIVATE ${COMMON_INCLUDES})
+    target_link_libraries(test_position_sizer PRIVATE ${TEST_LIBS})
+    add_test(NAME test_position_sizer COMMAND test_position_sizer)
+
+    # test_risk_manager
+    add_executable(test_risk_manager tests/test_risk_manager.cpp)
+    target_include_directories(test_risk_manager PRIVATE ${COMMON_INCLUDES})
+    target_link_libraries(test_risk_manager PRIVATE ${TEST_LIBS})
+    add_test(NAME test_risk_manager COMMAND test_risk_manager)
+
+    # test_portfolio_risk
+    add_executable(test_portfolio_risk tests/test_portfolio_risk.cpp)
+    target_include_directories(test_portfolio_risk PRIVATE ${COMMON_INCLUDES})
+    target_link_libraries(test_portfolio_risk PRIVATE ${TEST_LIBS})
+    add_test(NAME test_portfolio_risk COMMAND test_portfolio_risk)
+
+    # Convenience target: build all tests
+    add_custom_target(all_tests DEPENDS
+        test_signal_parser test_position_sizer
+        test_risk_manager test_portfolio_risk
+    )
+endif()

@@ -50,7 +50,11 @@ public:
         }
     }
 
-    // 현재 가용 토큰 수
+    // 현재 가용 토큰 수 (snapshot without refill).
+    // Returns a stale-but-safe lower bound. We intentionally do NOT call
+    // refill() here so that available() can remain a true const observer
+    // with no side-effects. Callers who need an up-to-date count should
+    // use try_acquire() instead.
     [[nodiscard]] double available() const {
         std::lock_guard lock(m_mtx);
         return m_tokens;

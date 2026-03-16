@@ -1,6 +1,11 @@
 // ============================================================================
-// execution/execution_engine.hpp -- 멀티스레드 주문 실행 엔진 v6.0
-// 2026-03-15 | A-grade 개선 패치
+// execution/execution_engine.hpp -- 멀티스레드 주문 실행 엔진 v7.0
+// 2026-03-16 | Refactored: PositionManager + TradeRecorder extracted
+//
+// v7.0 변경:
+//   - PositionManager: 포지션 라이프사이클 관리 (position_manager.hpp)
+//   - TradeRecorder: 거래 기록/통계/PnL 계산 (trade_recorder.hpp)
+//   - ExecutionEngine: 시그널 처리 + 워커 + WebSocket 오케스트레이션
 //
 // v6.0 변경:
 //   - 실제 PnL 계산 (entry/exit/qty 기반 + 수수료 차감)
@@ -45,6 +50,8 @@
 #include "exchange/bitget_ws.hpp"
 #include "core/alert_manager.hpp"
 #include "risk/symbol_learner.hpp"
+#include "execution/position_manager.hpp"
+#include "execution/trade_recorder.hpp"
 
 namespace hft {
 
@@ -70,34 +77,60 @@ struct TradingConfig {
     std::unordered_map<std::string, TfFilter> tf_filters;
 };
 
+struct EngineConfig {
+    MPSCQueue<WebhookSignal>& signal_queue;
+    BitgetAuth auth;
+    BitgetRestConfig rest_config;
+    RiskManager& risk_mgr;
+    SymbolScorer& scorer;
+    FeeAnalyzer& fee_analyzer;
+    PositionSizer& sizer;
+    PortfolioRiskManager& portfolio_risk;
+    StatePersistence& state_store;
+    AlertManager& alerts;
+    SymbolLearner& learner;
+    TradingConfig trading_config;
+};
+
+// ============================================================================
+// Lock ordering contract (to prevent deadlocks):
+//
+//   1. SymbolLockManager (m_sym_locks) -- acquired FIRST via wait_lock()
+//   2. m_pos_mtx (position/balance mutex) -- acquired AFTER symbol locks
+//   3. PortfolioRiskManager::m_mtx -- acquired AFTER m_pos_mtx
+//      (called while m_pos_mtx is held, e.g. check_entry, get_state)
+//   4. SymbolScorer::m_mtx -- INDEPENDENT; never held simultaneously
+//      with m_pos_mtx, so no ordering constraint
+//   5. m_fp_mtx (fingerprint mutex) -- INDEPENDENT; never held with
+//      m_pos_mtx or symbol locks
+//
+// Never acquire m_pos_mtx while holding PortfolioRiskManager::m_mtx.
+// Never acquire symbol locks while holding m_pos_mtx.
+// ============================================================================
 class ExecutionEngine {
 public:
-    ExecutionEngine(SPSCQueue<WebhookSignal>& signal_queue,
-                    BitgetAuth auth,
-                    BitgetRestConfig rest_config,
-                    RiskManager& risk_mgr,
-                    SymbolScorer& scorer,
-                    FeeAnalyzer& fee_analyzer,
-                    PositionSizer& sizer,
-                    PortfolioRiskManager& portfolio_risk,
-                    StatePersistence& state_store,
-                    AlertManager& alerts,
-                    SymbolLearner& learner,
-                    TradingConfig trading_config = {})
-        : m_signal_queue(signal_queue)
-        , m_auth(std::move(auth))
-        , m_rest_config(std::move(rest_config))
-        , m_risk(risk_mgr)
-        , m_scorer(scorer)
-        , m_fee(fee_analyzer)
-        , m_sizer(sizer)
-        , m_port_risk(portfolio_risk)
-        , m_state(state_store)
-        , m_alerts(alerts)
-        , m_learner(learner)
-        , m_trading(std::move(trading_config))
+    explicit ExecutionEngine(const EngineConfig& cfg)
+        : m_signal_queue(cfg.signal_queue)
+        , m_auth(cfg.auth)
+        , m_rest_config(cfg.rest_config)
+        , m_risk(cfg.risk_mgr)
+        , m_scorer(cfg.scorer)
+        , m_fee(cfg.fee_analyzer)
+        , m_sizer(cfg.sizer)
+        , m_port_risk(cfg.portfolio_risk)
+        , m_state(cfg.state_store)
+        , m_alerts(cfg.alerts)
+        , m_learner(cfg.learner)
+        , m_trading(cfg.trading_config)
         , m_order_limiter(m_trading.order_rate_limit)
-        , m_tpsl_limiter(m_trading.tpsl_rate_limit) {}
+        , m_tpsl_limiter(m_trading.tpsl_rate_limit)
+        , m_pos_mgr(m_pos_mtx, m_balance, m_peak_balance, m_positions, m_port_risk, m_state)
+        , m_trade_rec(m_pos_mtx, m_balance, m_peak_balance, m_trades, m_alerts, m_learner)
+    {
+        m_pos_mgr.set_trades_ref(&m_trades);
+    }
+
+    static constexpr int MAX_WORKERS = 32;
 
     void start() {
         // 상태 복구
@@ -134,7 +167,13 @@ public:
             init_leverage();
         }
 
-        int nw = std::max(1, m_trading.num_workers);
+        int nw = std::min(std::max(1, m_trading.num_workers), MAX_WORKERS);
+        auto now_epoch = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        for (int i = 0; i < nw; ++i) {
+            m_worker_heartbeats[i].store(now_epoch, std::memory_order_relaxed);
+        }
+        m_num_workers_active = nw;
         for (int i = 0; i < nw; ++i) {
             m_workers.emplace_back([this, i] { worker_loop(i); });
         }
@@ -164,7 +203,7 @@ public:
         // 최종 상태 저장
         {
             std::lock_guard lock(m_pos_mtx);
-            m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
+            m_pos_mgr.save_state(m_trades, m_orders_executed.load());
         }
 
         spdlog::info("[Exec] Stopped. Executed={} Rejected={} RiskSkip={} Skipped={}",
@@ -195,31 +234,13 @@ public:
     }
 
     [[nodiscard]] std::unordered_map<std::string, ManagedPosition> positions_snapshot() const {
-        std::lock_guard lock(m_pos_mtx);
-        return m_positions;
+        return m_pos_mgr.snapshot();
     }
 
     [[nodiscard]] nlohmann::json get_stats() const {
-        std::lock_guard lock(m_pos_mtx);
-        int total_trades = static_cast<int>(m_trades.size());
-        int wins = 0; double total_pnl = 0;
-        for (auto& t : m_trades) {
-            if (t.pnl > 0) wins++;
-            total_pnl += t.pnl;
-        }
-        return nlohmann::json{
-            {"total_trades", total_trades},
-            {"wins", wins},
-            {"losses", total_trades - wins},
-            {"win_rate", total_trades > 0 ? std::round(static_cast<double>(wins) / total_trades * 10000.0) / 100.0 : 0},
-            {"total_pnl", std::round(total_pnl * 10000.0) / 10000.0},
-            {"balance", m_balance},
-            {"peak_balance", m_peak_balance},
-            {"open_positions", m_positions.size()},
-            {"orders_executed", m_orders_executed.load()},
-            {"risk_skips", m_risk_skips.load()},
-            {"shadow_mode", m_trading.shadow_mode}
-        };
+        return m_trade_rec.get_stats(
+            [this]() -> size_t { std::lock_guard lock(m_pos_mtx); return m_positions.size(); }(),
+            m_orders_executed.load(), m_risk_skips.load(), m_trading.shadow_mode);
     }
 
     // Scorer access for dashboard
@@ -229,35 +250,19 @@ public:
     SymbolLearner& learner() { return m_learner; }
 
     [[nodiscard]] std::vector<TradeRecord> trades_snapshot() const {
-        std::lock_guard lock(m_pos_mtx);
-        return m_trades;
+        return m_trade_rec.snapshot();
     }
 
 private:
-    // ── PnL 계산 헬퍼 ──
-    static double calc_pnl(const std::string& side, double entry, double exit,
-                           double qty, int leverage) {
-        if (entry <= 0 || qty <= 0) return 0.0;
-        double direction = (side == "long") ? 1.0 : -1.0;
-        return direction * (exit - entry) * qty;
-    }
-
-    // ── 수수료 추정: taker 0.06% × 진입+청산 왕복 ──
-    static double calc_fee(double price, double qty) {
-        constexpr double TAKER_FEE_PCT = 0.0006;  // 0.06%
-        double notional = price * qty;
-        return notional * TAKER_FEE_PCT * 2.0;  // round-trip
-    }
-
     void init_leverage() {
         net::io_context ioc;
         BitgetRestClient rest(ioc, m_auth, m_rest_config);
 
         // 실제 Bitget 잔고 조회
-        fetch_real_balance(rest);
+        m_pos_mgr.fetch_real_balance(rest);
 
         // 거래소 포지션과 동기화 (ghost position 제거)
-        sync_positions_with_exchange(rest);
+        m_pos_mgr.sync_positions_with_exchange(rest, m_orders_executed);
 
         // 심볼별 계약 정보 (sizeMultiplier) 로드
         rest.fetch_contracts();
@@ -278,174 +283,6 @@ private:
         spdlog::info("[Exec] Leverage init complete, {} contracts loaded", m_contracts.size());
     }
 
-    void fetch_real_balance(BitgetRestClient& rest) {
-        try {
-            auto account = rest.get_account();
-            auto code = account.value("code", "99999");
-            if (code == "00000" && account.contains("data")) {
-                auto& data = account["data"];
-                // Bitget V2: available = 사용 가능 잔고, accountEquity = 총 자산
-                double available = 0.0;
-                double equity = 0.0;
-                if (data.contains("available")) {
-                    available = std::stod(data["available"].get<std::string>());
-                }
-                if (data.contains("accountEquity")) {
-                    equity = std::stod(data["accountEquity"].get<std::string>());
-                }
-
-                // 사용 가능 잔고를 기준으로 설정
-                double real_balance = (available > 0) ? available : equity;
-                if (real_balance > 0) {
-                    std::lock_guard lock(m_pos_mtx);
-                    m_balance = real_balance;
-                    // peak_balance도 실제 잔고 기준으로 리셋
-                    // (state에서 잘못된 값 로드된 경우 교정)
-                    double real_equity = (equity > 0) ? equity : real_balance;
-                    if (m_peak_balance > real_equity * 2.0 || m_peak_balance < real_balance) {
-                        m_peak_balance = real_equity;
-                        spdlog::info("[Exec] Peak balance corrected to {:.2f}", m_peak_balance);
-                    }
-                    m_port_risk.update_balance(m_balance);
-                    spdlog::info("[Exec] Real Bitget balance: available={:.2f} equity={:.2f} -> using {:.2f}",
-                        available, equity, m_balance);
-                } else {
-                    spdlog::warn("[Exec] Bitget returned zero balance, keeping default: {:.2f}", m_balance);
-                }
-            } else {
-                spdlog::error("[Exec] Failed to fetch balance: code={} msg={}",
-                    code, account.value("msg", "unknown"));
-            }
-        } catch (const std::exception& e) {
-            spdlog::error("[Exec] Balance fetch error: {}", e.what());
-        }
-    }
-
-    // -- 거래소 포지션 양방향 동기화 --
-    // 1) Ghost 제거: 내부에 있지만 거래소에 없는 포지션 삭제
-    // 2) 역방향 등록: 거래소에 있지만 내부에 없는 포지션 가져오기
-    void sync_positions_with_exchange(BitgetRestClient& rest) {
-        std::lock_guard lock(m_pos_mtx);
-
-        try {
-            auto resp = rest.get_positions();
-            auto code = resp.value("code", "99999");
-            if (code != "00000") {
-                spdlog::error("[Sync] Failed to fetch exchange positions: code={} msg={}",
-                    code, resp.value("msg", "unknown"));
-                return;
-            }
-
-            // Parse exchange positions with full data
-            struct ExchangePos {
-                std::string symbol;
-                std::string hold_side;
-                double total{0.0};
-                double avg_price{0.0};
-                int leverage{10};
-            };
-            std::unordered_map<std::string, ExchangePos> exchange_positions;  // key: "SYMBOL:side"
-
-            auto parse_double = [](const nlohmann::json& j, const std::string& key) -> double {
-                if (!j.contains(key)) return 0.0;
-                auto& v = j[key];
-                if (v.is_string()) {
-                    try { return std::stod(v.get<std::string>()); } catch (...) { return 0.0; }
-                } else if (v.is_number()) {
-                    return v.get<double>();
-                }
-                return 0.0;
-            };
-            auto parse_int = [](const nlohmann::json& j, const std::string& key, int def = 10) -> int {
-                if (!j.contains(key)) return def;
-                auto& v = j[key];
-                if (v.is_string()) {
-                    try { return std::stoi(v.get<std::string>()); } catch (...) { return def; }
-                } else if (v.is_number()) {
-                    return v.get<int>();
-                }
-                return def;
-            };
-
-            if (resp.contains("data") && resp["data"].is_array()) {
-                for (auto& pos : resp["data"]) {
-                    ExchangePos ep;
-                    ep.symbol    = pos.value("symbol", "");
-                    ep.hold_side = pos.value("holdSide", "");
-                    ep.total     = parse_double(pos, "total");
-                    ep.avg_price = parse_double(pos, "averageOpenPrice");
-                    ep.leverage  = parse_int(pos, "leverage", 10);
-
-                    if (!ep.symbol.empty() && ep.total > 0) {
-                        std::string key = ep.symbol + ":" + ep.hold_side;
-                        exchange_positions[key] = ep;
-                    }
-                }
-            }
-
-            spdlog::info("[Sync] Exchange has {} open position(s), internal has {}",
-                exchange_positions.size(), m_positions.size());
-
-            // === 1) Forward: Remove ghost positions (internal but not on exchange) ===
-            std::vector<std::string> to_remove;
-            for (auto& [key, pos] : m_positions) {
-                std::string lookup = pos.symbol + ":" + pos.side;
-                if (exchange_positions.find(lookup) == exchange_positions.end()) {
-                    to_remove.push_back(key);
-                    spdlog::warn("[Sync] Ghost position removed: key={} symbol={} side={} entry={:.2f} qty={:.6f}",
-                        key, pos.symbol, pos.side, pos.entry_price, pos.quantity);
-                }
-            }
-            for (auto& key : to_remove) {
-                m_positions.erase(key);
-            }
-
-            // === 2) Reverse: Import exchange positions not in internal ===
-            // Build set of internal symbol:side pairs for lookup
-            std::unordered_set<std::string> internal_lookup;
-            for (auto& [key, pos] : m_positions) {
-                internal_lookup.insert(pos.symbol + ":" + pos.side);
-            }
-
-            int imported = 0;
-            for (auto& [exkey, ep] : exchange_positions) {
-                if (internal_lookup.find(exkey) == internal_lookup.end()) {
-                    // This exchange position is not tracked internally — import it
-                    ManagedPosition mp;
-                    mp.symbol      = ep.symbol;
-                    mp.timeframe   = "ext";  // 외부 동기화 마커
-                    mp.side        = ep.hold_side;
-                    mp.entry_price = ep.avg_price;
-                    mp.quantity    = ep.total;
-                    mp.leverage    = ep.leverage;
-                    mp.tier        = "C";     // 기본 티어
-                    mp.opened_at   = std::chrono::system_clock::now();
-
-                    // Use symbol:side as internal key (consistent with exchange key format)
-                    std::string internal_key = ep.symbol + "_" + ep.hold_side + "_ext";
-                    m_positions[internal_key] = mp;
-                    imported++;
-
-                    spdlog::info("[Sync] Imported exchange position: {} {} entry={:.4f} qty={:.6f} lev={}x",
-                        ep.symbol, ep.hold_side, ep.avg_price, ep.total, ep.leverage);
-                }
-            }
-
-            // Log summary
-            bool changed = !to_remove.empty() || imported > 0;
-            if (changed) {
-                spdlog::info("[Sync] Reconciliation: removed={} imported={} total={}",
-                    to_remove.size(), imported, m_positions.size());
-                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
-            } else {
-                spdlog::info("[Sync] All {} position(s) in sync", m_positions.size());
-            }
-
-        } catch (const std::exception& e) {
-            spdlog::error("[Sync] Position sync error: {}", e.what());
-        }
-    }
-
     void start_websocket() {
         m_ws_client = std::make_unique<BitgetWSClient>(
             m_auth,
@@ -463,38 +300,15 @@ private:
                 if (upd.size <= 0) {
                     spdlog::info("[WS] Position closed: {} {}", upd.symbol, upd.hold_side);
                     std::lock_guard lock(m_pos_mtx);
-                    for (auto it = m_positions.begin(); it != m_positions.end(); ++it) {
-                        if (it->second.symbol == upd.symbol && it->second.side == upd.hold_side) {
-                            auto& pos = it->second;
-                            double exit_price = upd.avg_price > 0 ? upd.avg_price : pos.entry_price;
-                            double fee = calc_fee(exit_price, pos.quantity);
-                            double pnl = calc_pnl(pos.side, pos.entry_price, exit_price,
-                                                   pos.quantity, pos.leverage) - fee;
-                            // Use exchange-reported PnL if available
-                            if (std::abs(upd.realized_pnl) > 0.0001) {
-                                pnl = upd.realized_pnl - fee;
-                            }
-                            TradeRecord tr;
-                            tr.symbol = upd.symbol;
-                            tr.timeframe = pos.timeframe;
-                            tr.exit_reason = "WS_CLOSE";
-                            tr.entry_price = pos.entry_price;
-                            tr.exit_price = exit_price;
-                            tr.quantity = pos.quantity;
-                            tr.pnl = pnl;
-                            tr.fee = fee;
-                            m_trades.push_back(tr);
-                            m_learner.record_trade(tr);
-                            m_balance += pnl;
-                            if (m_balance > m_peak_balance) m_peak_balance = m_balance;
-                            spdlog::info("[WS] Auto-removed {} {} PnL={:.4f}",
-                                upd.symbol, upd.hold_side, pnl);
-                            m_alerts.info("TRADE", "WS close " + upd.symbol +
-                                " PnL=" + std::to_string(pnl).substr(0,8), upd.symbol);
-                            m_positions.erase(it);
-                            m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
-                            break;
-                        }
+                    auto result = m_pos_mgr.find_and_prepare_ws_close(upd.symbol, upd.hold_side);
+                    if (result.found) {
+                        double exit_price = upd.avg_price > 0 ? upd.avg_price : result.pos.entry_price;
+                        double pnl = m_trade_rec.record_ws_close(result.pos, exit_price, upd.realized_pnl);
+                        spdlog::info("[WS] Auto-removed {} {} PnL={:.4f}",
+                            upd.symbol, upd.hold_side, pnl);
+                        m_trade_rec.alert_trade("info", "WS close " + upd.symbol +
+                            " PnL=" + std::to_string(pnl).substr(0,8), upd.symbol);
+                        m_pos_mgr.save_state(m_trades, m_orders_executed.load());
                     }
                 }
             },
@@ -516,6 +330,12 @@ private:
         spdlog::info("[Worker-{}] Started", wid);
 
         while (m_running.load(std::memory_order_relaxed)) {
+            // Update heartbeat on every loop iteration (wake or signal)
+            auto hb_now = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            if (wid < MAX_WORKERS)
+                m_worker_heartbeats[wid].store(hb_now, std::memory_order_relaxed);
+
             auto sig_opt = m_signal_queue.wait_pop(std::chrono::milliseconds(500));
             if (!sig_opt) {
                 if (wid == 0) periodic_tasks();
@@ -549,7 +369,7 @@ private:
 
         if (m_state.needs_save()) {
             std::lock_guard lock(m_pos_mtx);
-            m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
+            m_pos_mgr.save_state(m_trades, m_orders_executed.load());
         }
 
         // Periodic position sync with exchange (every 120 seconds)
@@ -562,11 +382,21 @@ private:
                 net::io_context sync_ioc;
                 BitgetRestClient sync_rest(sync_ioc, m_auth, m_rest_config);
                 sync_rest.set_contracts(m_contracts);
-                sync_positions_with_exchange(sync_rest);
-                fetch_real_balance(sync_rest);
+                m_pos_mgr.sync_positions_with_exchange(sync_rest, m_orders_executed);
+                m_pos_mgr.fetch_real_balance(sync_rest);
                 spdlog::info("[Periodic] Position sync + balance refresh done");
             } catch (const std::exception& e) {
                 spdlog::warn("[Periodic] Sync failed: {}", e.what());
+            }
+
+            // Watchdog: check worker heartbeats
+            constexpr int64_t WATCHDOG_TIMEOUT_SEC = 300;
+            for (int i = 0; i < m_num_workers_active; ++i) {
+                auto hb = m_worker_heartbeats[i].load(std::memory_order_relaxed);
+                auto stale = now_sec - hb;
+                if (stale > WATCHDOG_TIMEOUT_SEC) {
+                    spdlog::critical("[WATCHDOG] Worker-{} appears stuck (no heartbeat for {}s)", i, stale);
+                }
             }
         }
     }
@@ -753,17 +583,10 @@ private:
             balance_now = m_balance;
             peak_now = m_peak_balance;
             dd_pct = peak_now > 0 ? (peak_now - balance_now) / peak_now * 100.0 : 0;
-
-            // 오픈 포지션들의 사용 마진 합산
-            used_margin = 0.0;
-            for (auto& [key, pos] : m_positions) {
-                double notional = pos.entry_price * pos.quantity;
-                int pos_lev = pos.leverage > 0 ? pos.leverage : m_trading.default_leverage;
-                used_margin += notional / pos_lev;
-            }
+            used_margin = m_pos_mgr.calc_used_margin(m_trading.default_leverage);
         }
 
-        const SymbolScore* score = m_scorer.get_score(sig.symbol);
+        auto score = m_scorer.get_score(sig.symbol);
         int leverage = m_trading.default_leverage;
         if (score) leverage = std::min(leverage, score->max_leverage);
 
@@ -803,8 +626,10 @@ private:
         // 5. 포트폴리오 리스크
         {
             std::lock_guard lock(m_pos_mtx);
+            std::string entry_side = sig.action == "buy" ? "long" : "short";
             auto dec = m_port_risk.check_entry(
-                sig.symbol, tf, sig.price, sig.size, leverage, m_balance, m_positions);
+                sig.symbol, tf, sig.price, sig.size, leverage, m_balance, m_positions,
+                sl_price, entry_side);
             if (!dec.allowed) {
                 spdlog::info("[W-{}] RISK {}: {}", wid, sig.symbol, dec.reason);
                 m_risk_skips.fetch_add(1);
@@ -825,27 +650,14 @@ private:
         spdlog::info("[W-{}] ENTRY {} {} sz={:.6f} lev={}x ${:.2f} tier={} | {}",
             wid, sig.action, sig.symbol, sig.size, leverage, sz.usdt_amount, tier, sz.reason);
 
-        auto register_position = [&](uint64_t id) {
-            std::lock_guard lock(m_pos_mtx);
-            std::string key = sig.symbol + "_" + tf + "_" + std::to_string(id);
-            ManagedPosition pos;
-            pos.symbol = sig.symbol;
-            pos.timeframe = tf;
-            pos.side = sig.action == "buy" ? "long" : "short";
-            pos.entry_price = sig.price;
-            pos.quantity = sig.size;
-            pos.leverage = leverage;
-            pos.sl_price = sl_price;
-            pos.tp1_price = sig.has_tp1() ? sig.tp1 : 0;
-            pos.tier = tier;
-            pos.opened_at = std::chrono::system_clock::now();
-            m_positions[key] = pos;
-        };
+        std::string side_str = sig.action == "buy" ? "long" : "short";
 
         if (m_trading.shadow_mode) {
             spdlog::info("[W-{}] SHADOW {} {} sz={:.6f}", wid, sig.action, sig.symbol, sig.size);
             m_orders_executed.fetch_add(1);
-            register_position(oid);
+            m_pos_mgr.register_position(sig.symbol, tf, side_str,
+                sig.price, sig.size, leverage, sl_price,
+                sig.has_tp1() ? sig.tp1 : 0, tier, oid);
             return;
         }
 
@@ -859,9 +671,10 @@ private:
 
         if (resp.status == OrderStatus::New) {
             m_orders_executed.fetch_add(1);
-            std::string side_str = sig.action == "buy" ? "long" : "short";
             m_risk.on_position_opened(sig.symbol, sig.size, side_str);
-            register_position(oid);
+            m_pos_mgr.register_position(sig.symbol, tf, side_str,
+                sig.price, sig.size, leverage, sl_price,
+                sig.has_tp1() ? sig.tp1 : 0, tier, oid);
 
             spdlog::info("[W-{}] OK {} {} sz={:.6f} exid={}",
                 wid, sig.action, sig.symbol, sig.size, resp.exchange_order_id);
@@ -875,7 +688,7 @@ private:
             // Fix 4: 주문 성공 즉시 상태 저장 (크래시 시 포지션 유실 방지)
             {
                 std::lock_guard lock(m_pos_mtx);
-                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
+                m_pos_mgr.save_state(m_trades, m_orders_executed.load());
             }
 
             // TP/SL: preset으로 주문에 포함됨. 별도 API 호출 불필요.
@@ -900,20 +713,9 @@ private:
         std::string hold_side = (sig.signal_direction == "bull") ? "long" : "short";
 
         // 매칭되는 포지션 찾기
-        std::string matched_key;
-        double pos_qty = 0;
-        {
-            std::lock_guard lock(m_pos_mtx);
-            for (auto& [key, pos] : m_positions) {
-                if (pos.symbol == sig.symbol && pos.side == hold_side) {
-                    matched_key = key;
-                    pos_qty = pos.quantity;
-                    break;
-                }
-            }
-        }
+        auto match = m_pos_mgr.find_by_symbol_side(sig.symbol, hold_side);
 
-        if (matched_key.empty()) {
+        if (match.key.empty()) {
             spdlog::warn("[W-{}] TP {} no matching position for {} hold={}",
                 wid, sig.tp_level, sig.symbol, hold_side);
             return;
@@ -924,66 +726,37 @@ private:
         if (sig.tp_level == "TP1")      close_ratio = 0.33;
         else if (sig.tp_level == "TP2") close_ratio = 0.50;  // 남은 67%의 50% ≈ 33%
 
-        double close_qty = pos_qty * close_ratio;
+        double close_qty = match.quantity * close_ratio;
 
         m_order_limiter.acquire();
         auto resp = rest.close_partial(sig.symbol, close_qty, hold_side);
 
         if (resp.status == OrderStatus::New) {
             spdlog::info("[W-{}] TP {} closed {:.6f}/{:.6f} of {}",
-                wid, sig.tp_level, close_qty, pos_qty, sig.symbol);
+                wid, sig.tp_level, close_qty, match.quantity, sig.symbol);
 
             std::lock_guard lock(m_pos_mtx);
-            auto it = m_positions.find(matched_key);
-            if (it != m_positions.end()) {
-                auto& pos = it->second;
-                double exit_price = sig.price > 0 ? sig.price : pos.entry_price;
-                double fee = calc_fee(exit_price, close_qty);
-                double pnl = calc_pnl(pos.side, pos.entry_price, exit_price, close_qty, pos.leverage) - fee;
+            auto* pos = m_pos_mgr.get(match.key);
+            if (pos) {
+                double exit_price = sig.price > 0 ? sig.price : pos->entry_price;
 
                 if (sig.tp_level == "TP3" || close_ratio >= 0.99) {
-                    // 전체 청산 → 포지션 제거 + 거래 기록
-                    TradeRecord tr;
-                    tr.symbol = sig.symbol;
-                    tr.timeframe = pos.timeframe;
-                    tr.exit_reason = sig.tp_level;
-                    tr.entry_price = pos.entry_price;
-                    tr.exit_price = exit_price;
-                    tr.quantity = close_qty;
-                    tr.pnl = pnl;
-                    tr.fee = fee;
-                    m_trades.push_back(tr);
-                    m_learner.record_trade(tr);
-                    m_balance += pnl;
-                    if (m_balance > m_peak_balance) m_peak_balance = m_balance;
-                    m_positions.erase(it);
+                    // 전체 청산 → 거래 기록 + 포지션 제거
+                    double pnl = m_trade_rec.record_close(*pos, exit_price, sig.tp_level, close_qty);
+                    m_pos_mgr.remove(match.key);
                     spdlog::info("[TRADE] {} {} {:.4f} @ {:.4f} (100%)",
                         sig.tp_level, sig.symbol, pnl, exit_price);
-                    m_alerts.info("TRADE", sig.tp_level + " " + sig.symbol +
+                    m_trade_rec.alert_trade("info", sig.tp_level + " " + sig.symbol +
                         " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
                 } else {
                     // 부분 청산 → 수량 차감 + PnL 기록
-                    TradeRecord tr;
-                    tr.symbol = sig.symbol;
-                    tr.timeframe = pos.timeframe;
-                    tr.exit_reason = sig.tp_level + "_PARTIAL";
-                    tr.entry_price = pos.entry_price;
-                    tr.exit_price = exit_price;
-                    tr.quantity = close_qty;
-                    tr.pnl = pnl;
-                    tr.fee = fee;
-                    m_trades.push_back(tr);
-                    m_learner.record_trade(tr);
-                    m_balance += pnl;
-                    if (m_balance > m_peak_balance) m_peak_balance = m_balance;
-                    pos.quantity -= close_qty;
+                    double pnl = m_trade_rec.record_close(*pos, exit_price,
+                        sig.tp_level + "_PARTIAL", close_qty);
+                    m_pos_mgr.reduce_quantity(match.key, close_qty);
                     spdlog::info("[TRADE] {} {} {:.4f} @ {:.4f} ({:.0f}%)",
                         sig.tp_level, sig.symbol, pnl, exit_price, close_ratio * 100);
-                    if (pos.quantity <= 0) {
-                        m_positions.erase(it);
-                    }
                 }
-                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
+                m_pos_mgr.save_state(m_trades, m_orders_executed.load());
             }
         } else {
             spdlog::error("[W-{}] TP {} close failed: {} {}",
@@ -999,18 +772,9 @@ private:
         std::string hold_side = (sig.signal_direction == "bull") ? "long" : "short";
 
         // 매칭 포지션 찾기
-        std::string matched_key;
-        {
-            std::lock_guard lock(m_pos_mtx);
-            for (auto& [key, pos] : m_positions) {
-                if (pos.symbol == sig.symbol && pos.side == hold_side) {
-                    matched_key = key;
-                    break;
-                }
-            }
-        }
+        auto match = m_pos_mgr.find_by_symbol_side(sig.symbol, hold_side);
 
-        if (matched_key.empty()) {
+        if (match.key.empty()) {
             spdlog::warn("[W-{}] SL no matching position for {} hold={}",
                 wid, sig.symbol, hold_side);
             return;
@@ -1022,30 +786,15 @@ private:
 
         if (closed) {
             std::lock_guard lock(m_pos_mtx);
-            auto it = m_positions.find(matched_key);
-            if (it != m_positions.end()) {
-                auto& pos = it->second;
-                double exit_price = sig.price > 0 ? sig.price : pos.sl_price;
-                double fee = calc_fee(exit_price, pos.quantity);
-                double pnl = calc_pnl(pos.side, pos.entry_price, exit_price, pos.quantity, pos.leverage) - fee;
-                TradeRecord tr;
-                tr.symbol = sig.symbol;
-                tr.timeframe = pos.timeframe;
-                tr.exit_reason = "SL";
-                tr.entry_price = pos.entry_price;
-                tr.exit_price = exit_price;
-                tr.quantity = pos.quantity;
-                tr.pnl = pnl;
-                tr.fee = fee;
-                m_trades.push_back(tr);
-                m_learner.record_trade(tr);
-                m_balance += pnl;
-                if (m_balance > m_peak_balance) m_peak_balance = m_balance;
-                m_positions.erase(it);
-                m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
+            auto* pos = m_pos_mgr.get(match.key);
+            if (pos) {
+                double exit_price = sig.price > 0 ? sig.price : pos->sl_price;
+                double pnl = m_trade_rec.record_close(*pos, exit_price, "SL");
+                m_pos_mgr.remove(match.key);
+                m_pos_mgr.save_state(m_trades, m_orders_executed.load());
                 spdlog::info("[TRADE] SL {} {:.4f} @ {:.4f}",
                     sig.symbol, pnl, exit_price);
-                m_alerts.warn("TRADE", "SL " + sig.symbol +
+                m_trade_rec.alert_trade("warn", "SL " + sig.symbol +
                     " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
             }
             spdlog::info("[W-{}] SL closed {} hold={}", wid, sig.symbol, hold_side);
@@ -1104,32 +853,14 @@ private:
 
             // 내부 상태에서도 포지션 제거
             std::lock_guard lock(m_pos_mtx);
-            for (auto it = m_positions.begin(); it != m_positions.end(); ++it) {
-                if (it->second.symbol == sig.symbol && it->second.side == hold_side) {
-                    auto& pos = it->second;
-                    double exit_price = sig.price;  // 긴급청산은 현재가
-                    double fee = calc_fee(exit_price, pos.quantity);
-                    double pnl = calc_pnl(pos.side, pos.entry_price, exit_price, pos.quantity, pos.leverage) - fee;
-                    TradeRecord tr;
-                    tr.symbol = sig.symbol;
-                    tr.timeframe = pos.timeframe;
-                    tr.exit_reason = "EMERGENCY_CLOSE_NO_SL";
-                    tr.entry_price = pos.entry_price;
-                    tr.exit_price = exit_price;
-                    tr.quantity = pos.quantity;
-                    tr.pnl = pnl;
-                    tr.fee = fee;
-                    m_trades.push_back(tr);
-                    m_learner.record_trade(tr);
-                    m_balance += pnl;
-                    if (m_balance > m_peak_balance) m_peak_balance = m_balance;
-                    m_positions.erase(it);
-                    m_alerts.critical("TRADE", "EMERGENCY CLOSE " + sig.symbol +
-                        " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
-                    break;
-                }
+            auto result = m_pos_mgr.find_and_prepare_ws_close(sig.symbol, hold_side);
+            if (result.found) {
+                double exit_price = sig.price;  // 긴급청산은 현재가
+                double pnl = m_trade_rec.record_close(result.pos, exit_price, "EMERGENCY_CLOSE_NO_SL");
+                m_trade_rec.alert_trade("critical", "EMERGENCY CLOSE " + sig.symbol +
+                    " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
             }
-            m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
+            m_pos_mgr.save_state(m_trades, m_orders_executed.load());
         } else if (!tp_ok) {
             // TP만 실패: 위험하지 않으므로 로그만 (SL은 있음)
             spdlog::warn("[W-{}] TP failed after {} retries for {} — SL is active, continuing",
@@ -1148,7 +879,7 @@ private:
     }
 
     // ── Shared state ──
-    SPSCQueue<WebhookSignal>& m_signal_queue;
+    MPSCQueue<WebhookSignal>& m_signal_queue;
     BitgetAuth m_auth;
     BitgetRestConfig m_rest_config;
     std::unordered_map<std::string, BitgetRestClient::ContractInfo> m_contracts;
@@ -1183,11 +914,19 @@ private:
 
     std::atomic<int64_t> m_last_sync_ts{0};  // epoch seconds of last position sync
 
+    // Worker heartbeat watchdog
+    std::atomic<int64_t> m_worker_heartbeats[MAX_WORKERS]{};
+    int m_num_workers_active{0};
+
     mutable std::mutex m_pos_mtx;
     double m_balance{100.0};   // 안전 기본값; start() 시 Bitget 실잔고로 덮어씀
     double m_peak_balance{100.0};
     std::unordered_map<std::string, ManagedPosition> m_positions;
     std::vector<TradeRecord> m_trades;
+
+    // ── Delegated components ──
+    PositionManager m_pos_mgr;
+    TradeRecorder m_trade_rec;
 
     // WebSocket 실시간 클라이언트
     std::unique_ptr<BitgetWSClient> m_ws_client;

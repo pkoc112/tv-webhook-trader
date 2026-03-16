@@ -12,6 +12,7 @@
 
 #include <string>
 #include <vector>
+#include <optional>
 #include <cmath>
 #include <algorithm>
 
@@ -82,7 +83,7 @@ public:
     [[nodiscard]] SizeResult calc_size(
         double balance, const std::string& symbol, double price,
         double sl_price, int leverage,
-        const SymbolScore* score, double current_dd_pct,
+        const std::optional<SymbolScore>& score, double current_dd_pct,
         double used_margin = 0.0) const
     {
         // 0. 가용 잔고 계산
@@ -206,7 +207,7 @@ public:
     [[nodiscard]] SizeResult calc_size(
         double balance, const std::string& symbol, double price,
         double sl_price, int leverage,
-        const SymbolScore* score, double current_dd_pct) const
+        const std::optional<SymbolScore>& score, double current_dd_pct) const
     {
         return calc_size(balance, symbol, price, sl_price, leverage,
                         score, current_dd_pct, 0.0);

@@ -1,0 +1,9 @@
+build/
+build_test/
+.git/
+.github/
+.gitignore
+.dockerignore
+*.md
+config/api_keys.json
+data/

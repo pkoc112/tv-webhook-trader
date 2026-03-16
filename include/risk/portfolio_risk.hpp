@@ -8,6 +8,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <deque>
 #include <mutex>
 #include <cmath>
 #include <chrono>
@@ -95,6 +96,10 @@ public:
         m_corr_factor      = cfg.value("correlation_factor", 0.7);
         m_max_corr_risk_pct = cfg.value("max_correlated_risk_pct", 50.0);
 
+        m_max_margin_usage_pct = cfg.value("max_margin_usage_pct", 90.0);
+        m_rapid_loss_window_min = cfg.value("rapid_loss_window_minutes", 10);
+        m_rapid_loss_pct = cfg.value("rapid_loss_pct", 2.0);
+
         auto cb = cfg.value("circuit_breaker", nlohmann::json::object());
         m_cb_daily_loss_pct  = cb.value("daily_loss_pct", 5.0);
         m_cb_weekly_loss_pct = cb.value("weekly_loss_pct", 10.0);
@@ -114,6 +119,19 @@ public:
         m_daily_pnl += pnl;
         m_weekly_pnl += pnl;
 
+        // Track recent losses for rate-of-loss detection
+        if (pnl < 0) {
+            m_recent_losses.emplace_back(std::chrono::steady_clock::now(), pnl);
+            prune_recent_losses_locked();
+
+            double total_recent_loss = 0.0;
+            for (auto& [_, loss] : m_recent_losses) total_recent_loss += loss;
+            double rapid_limit = m_initial_balance * (m_rapid_loss_pct / 100.0);
+            if (total_recent_loss < -rapid_limit) {
+                activate_circuit_breaker_locked("rapid_loss");
+            }
+        }
+
         double daily_limit = m_initial_balance * (m_cb_daily_loss_pct / 100.0);
         if (m_daily_pnl < -daily_limit) {
             activate_circuit_breaker_locked("daily_loss");
@@ -128,11 +146,39 @@ public:
         const std::string& symbol, const std::string& timeframe,
         double price, double qty, int leverage,
         double balance,
-        const std::unordered_map<std::string, ManagedPosition>& positions)
+        const std::unordered_map<std::string, ManagedPosition>& positions,
+        double sl_price = 0, const std::string& side = "long")
     {
         std::lock_guard lock(m_mtx);
         m_checks_total++;
         check_daily_reset_locked();
+
+        // 0a. Hard notional cap (non-configurable safety backstop)
+        if (price * qty > HARD_MAX_NOTIONAL) {
+            return block("hard_notional_cap",
+                "Notional " + fmt2(price * qty) + " > hard max " + fmt2(HARD_MAX_NOTIONAL));
+        }
+
+        // 0b. Liquidation price check
+        if (leverage >= 10 && sl_price == 0) {
+            spdlog::warn("[RISK] High leverage ({}x) with no SL for {}", leverage, symbol);
+        }
+        if (sl_price > 0 && leverage > 0) {
+            bool is_long = (side == "long" || side == "buy");
+            if (is_long) {
+                double liq_est = price * (1.0 - 0.9 / leverage);
+                if (sl_price < liq_est) {
+                    return block("sl_beyond_liquidation",
+                        "SL " + fmt2(sl_price) + " < est liq " + fmt2(liq_est) + " (LONG " + std::to_string(leverage) + "x)");
+                }
+            } else {
+                double liq_est = price * (1.0 + 0.9 / leverage);
+                if (sl_price > liq_est) {
+                    return block("sl_beyond_liquidation",
+                        "SL " + fmt2(sl_price) + " > est liq " + fmt2(liq_est) + " (SHORT " + std::to_string(leverage) + "x)");
+                }
+            }
+        }
 
         // 1. 서킷 브레이커
         if (m_cb_active) {
@@ -201,9 +247,10 @@ public:
         for (auto& [_, p] : positions) {
             total_margin += std::abs(p.entry_price * p.quantity) / p.leverage;
         }
-        if (total_margin + margin_needed > balance * 0.90) {
+        double margin_limit = balance * (m_max_margin_usage_pct / 100.0);
+        if (total_margin + margin_needed > margin_limit) {
             return block("margin_limit",
-                "Margin 90%: " + fmt2(total_margin + margin_needed) + "/" + fmt2(balance * 0.90));
+                "Margin " + fmt0(m_max_margin_usage_pct) + "%: " + fmt2(total_margin + margin_needed) + "/" + fmt2(margin_limit));
         }
 
         m_checks_passed++;
@@ -317,12 +364,23 @@ private:
         }
     }
 
+    void prune_recent_losses_locked() {
+        auto cutoff = std::chrono::steady_clock::now()
+            - std::chrono::minutes(m_rapid_loss_window_min);
+        while (!m_recent_losses.empty() && m_recent_losses.front().first < cutoff) {
+            m_recent_losses.pop_front();
+        }
+    }
+
     static std::string fmt0(double v) {
         char buf[32]; std::snprintf(buf, sizeof(buf), "%.0f", v); return buf;
     }
     static std::string fmt2(double v) {
         char buf[32]; std::snprintf(buf, sizeof(buf), "%.2f", v); return buf;
     }
+
+    // Hard safety limit (non-configurable)
+    static constexpr double HARD_MAX_NOTIONAL = 500.0;
 
     // State
     mutable std::mutex m_mtx;
@@ -333,6 +391,7 @@ private:
     std::chrono::steady_clock::time_point m_cb_activated_at;
     int    m_last_day{-1};
     int    m_last_week_day{-1};
+    std::deque<std::pair<std::chrono::steady_clock::time_point, double>> m_recent_losses;
 
     // Stats
     int m_checks_total{0};
@@ -346,6 +405,9 @@ private:
     std::unordered_map<std::string, double> m_tf_exposure_pct;
     double m_corr_factor{0.7};
     double m_max_corr_risk_pct{50.0};
+    double m_max_margin_usage_pct{90.0};
+    int    m_rapid_loss_window_min{10};
+    double m_rapid_loss_pct{2.0};
     double m_cb_daily_loss_pct{5.0};
     double m_cb_weekly_loss_pct{10.0};
     int    m_cb_cooldown_min{60};

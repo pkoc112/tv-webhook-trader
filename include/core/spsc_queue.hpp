@@ -1,10 +1,11 @@
 // ============================================================================
 // core/spsc_queue.hpp -- Thread-safe MPSC Signal Queue
-// v2.0 | 2026-03-13 | SPSC -> MPSC 전환 (다중 webhook 스레드 안전)
+// v2.1 | 2026-03-16 | Class renamed SPSCQueue -> MPSCQueue (was never SPSC)
 //
 // 변경 이력:
 //   v1.0  초기 생성 (lock-free SPSC)
 //   v2.0  mutex + condition_variable 기반 MPSC로 전환
+//   v2.1  클래스명 SPSCQueue -> MPSCQueue 수정 (실제 MPSC 구현에 맞게)
 //         - 다중 producer (webhook 스레드) 안전
 //         - move semantics 지원
 //         - condition_variable로 consumer 효율적 대기
@@ -22,12 +23,12 @@
 namespace hft {
 
 template <typename T>
-class SPSCQueue {
+class MPSCQueue {
 public:
-    explicit SPSCQueue(size_t max_capacity) : m_max_cap(max_capacity) {}
+    explicit MPSCQueue(size_t max_capacity) : m_max_cap(max_capacity) {}
 
-    SPSCQueue(const SPSCQueue&) = delete;
-    SPSCQueue& operator=(const SPSCQueue&) = delete;
+    MPSCQueue(const MPSCQueue&) = delete;
+    MPSCQueue& operator=(const MPSCQueue&) = delete;
 
     // Thread-safe push (multiple producers OK)
     bool try_push(T&& item) {

@@ -70,6 +70,9 @@
         },
         "correlation_factor": 0.7,
         "max_correlated_risk_pct": 80.0,
+        "max_margin_usage_pct": 90.0,
+        "rapid_loss_window_minutes": 10,
+        "rapid_loss_pct": 2.0,
         "circuit_breaker": {
             "daily_loss_pct": 5.0,
             "weekly_loss_pct": 10.0,
