@@ -521,7 +521,13 @@ private:
                 if (wid == 0) periodic_tasks();
                 continue;
             }
-            process_signal(wid, rest, std::move(*sig_opt));
+            try {
+                process_signal(wid, rest, std::move(*sig_opt));
+            } catch (const std::exception& e) {
+                spdlog::error("[Worker-{}] EXCEPTION in process_signal: {}", wid, e.what());
+            } catch (...) {
+                spdlog::error("[Worker-{}] UNKNOWN EXCEPTION in process_signal", wid);
+            }
         }
         rest.disconnect();
         spdlog::info("[Worker-{}] Stopped", wid);
@@ -631,6 +637,7 @@ private:
             }
 
             if (m_recent_fingerprints.count(fp)) {
+                spdlog::debug("[W-{}] SKIP {}: duplicate fingerprint", wid, sig.symbol);
                 m_orders_skipped.fetch_add(1);
                 return;
             }
@@ -640,6 +647,7 @@ private:
         // 화이트리스트
         if (!m_trading.allowed_symbols.empty() &&
             !m_trading.allowed_symbols.count(sig.symbol)) {
+            spdlog::debug("[W-{}] SKIP {}: not in allowed_symbols", wid, sig.symbol);
             m_orders_skipped.fetch_add(1);
             return;
         }
@@ -664,12 +672,20 @@ private:
     // ── 진입: 고급 리스크 파이프라인 ──
     void handle_entry(int wid, BitgetRestClient& rest, WebhookSignal&& sig) {
         if (!m_sym_locks.wait_lock(sig.symbol, std::chrono::seconds(15))) {
+            spdlog::warn("[W-{}] SKIP {}: symbol lock timeout (15s)", wid, sig.symbol);
             m_orders_skipped.fetch_add(1);
             return;
         }
         SymbolLockGuard guard(m_sym_locks, sig.symbol);
 
         std::string tf = sig.timeframe.empty() ? "unknown" : sig.timeframe;
+
+        // 0. USDC 심볼 필터 (현재 USDT-FUTURES만 지원)
+        if (sig.symbol.size() > 4 && sig.symbol.substr(sig.symbol.size() - 4) == "USDC") {
+            spdlog::info("[W-{}] SKIP {}: USDC symbol not supported (USDT-FUTURES only)", wid, sig.symbol);
+            m_orders_skipped.fetch_add(1);
+            return;
+        }
 
         // 1. 티어 체크
         std::string tier = m_scorer.get_tier(sig.symbol);
@@ -704,6 +720,7 @@ private:
         if (tf_it != m_trading.tf_filters.end()) {
             auto& filt = tf_it->second;
             if (filt.block_reverse && sig.sig_type == SignalType::ReEntry) {
+                spdlog::info("[W-{}] SKIP {}: ReEntry blocked for TF {}", wid, sig.symbol, tf);
                 m_risk_skips.fetch_add(1);
                 return;
             }
@@ -800,6 +817,7 @@ private:
         auto order_req = sig.to_order_request(oid);
 
         if (!m_risk.validate(order_req)) {
+            spdlog::warn("[W-{}] SKIP {}: risk_manager.validate() rejected", wid, sig.symbol);
             m_orders_rejected.fetch_add(1);
             return;
         }

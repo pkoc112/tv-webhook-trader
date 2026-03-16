@@ -666,8 +666,6 @@ body {
             <div style="display:flex;gap:8px;align-items:center">
                 <select id="learnerTFFilter" onchange="filterLearnerTable()" style="font-family:'JetBrains Mono',monospace;font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary)">
                     <option value="all">전체 TF</option>
-                    <option value="1">1분</option>
-                    <option value="5">5분</option>
                     <option value="15">15분</option>
                     <option value="30">30분</option>
                     <option value="60">60분</option>
@@ -1150,7 +1148,7 @@ function renderLearnerTable(data) {
 
     document.getElementById('learnerCount').textContent = data.length;
 
-    const tfColors = {'1':'#ef4444','5':'#f59e0b','15':'#3b82f6','30':'#a78bfa','60':'#10b981','all':'#64748b'};
+    const tfColors = {'15':'#3b82f6','30':'#a78bfa','60':'#10b981','ext':'#f59e0b','all':'#64748b'};
 
     tbody.innerHTML = data.map(s => {
         // win_rate: API returns as percentage (e.g. 50 = 50%)
@@ -1232,7 +1230,7 @@ function filterLearnerTable() {
 // ============================================================
 //  TF PERFORMANCE ANALYSIS
 // ============================================================
-const tfColors = {'1':'#ef4444','5':'#f59e0b','15':'#3b82f6','30':'#a78bfa','60':'#10b981','unknown':'#64748b','all':'#22d3ee'};
+const tfColors = {'15':'#3b82f6','30':'#a78bfa','60':'#10b981','ext':'#f59e0b','unknown':'#64748b','all':'#22d3ee'};
 const tfLabels = {'1':'1분','5':'5분','15':'15분','30':'30분','60':'1시간','unknown':'미분류','all':'전체'};
 
 async function updateTfStats() {
@@ -1246,8 +1244,8 @@ async function updateTfStats() {
         document.getElementById('tfStatus').textContent =
             `${overall.total_trades || 0} trades | WR: ${overall.win_rate || 0}% | PF: ${overall.profit_factor || 0}`;
 
-        // Summary cards from ranking
-        const ranking = data.ranking || [];
+        // Summary cards from ranking (exclude 1m/5m)
+        const ranking = (data.ranking || []).filter(r => r.timeframe !== '1' && r.timeframe !== '5');
         const cardsEl = document.getElementById('tfCards');
         if (ranking.length > 0) {
             cardsEl.innerHTML = ranking.map(r => {
