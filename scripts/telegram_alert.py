@@ -78,7 +78,7 @@ def is_important(line: str) -> bool:
 # [TRADE] 로그 → 한국어 문장 변환
 # ---------------------------------------------------------------------------
 RE_ENTRY = re.compile(
-    r'\[TRADE\] ENTRY (LONG|SHORT) (\w+) (\d+)x @ ([\d.]+) \$([\d.]+) TP1=([\d.]+) SL=([\d.]+)')
+    r'\[TRADE\] (ENTRY|REENTRY) (LONG|SHORT) (\w+) (\d+)x @ ([\d.]+) \$([\d.]+) TP1=([\d.]+) SL=([\d.]+)')
 RE_TP = re.compile(
     r'\[TRADE\] (TP\d) (\w+) ([-\d.]+) @ ([\d.]+) \((\d+)%\)')
 RE_SL = re.compile(
@@ -88,18 +88,37 @@ def format_line(line: str) -> str:
     m = re.match(r"^.*?tv-webhook-trader\[\d+\]:\s*(.+)$", line)
     msg = m.group(1) if m else line.strip()
 
-    # 진입 체결
+    # 진입/재진입 체결
     m = RE_ENTRY.search(msg)
     if m:
-        side, sym, lev, price, usd, tp1, sl = m.groups()
+        entry_type, side, sym, lev, price, usd, tp1, sl = m.groups()
         sym = sym.replace("USDT", "")
-        side_kr = "\ub871" if side == "LONG" else "\uc20f"
-        emoji = "\U0001f7e2" if side == "LONG" else "\U0001f534"
+        side_kr = "롱" if side == "LONG" else "숏"
+        is_reentry = entry_type == "REENTRY"
+        if is_reentry:
+            emoji = "🔄"
+            type_kr = "재진입"
+        else:
+            emoji = "🟢" if side == "LONG" else "🔴"
+            type_kr = "진입"
         tp1_s = tp1 if float(tp1) > 0 else "-"
         sl_s = sl if float(sl) > 0 else "-"
+        # TP1까지 예상 수익 계산
+        tp1_info = ""
+        if float(tp1) > 0 and float(price) > 0:
+            tp1_dist_pct = abs(float(tp1) - float(price)) / float(price) * 100 * int(lev)
+            tp1_est_usd = float(usd) * tp1_dist_pct / 100
+            tp1_info = f"\n📊 TP1 예상: +${tp1_est_usd:.2f} ({tp1_dist_pct:.1f}%)"
+        # SL 예상 손실
+        sl_info = ""
+        if float(sl) > 0 and float(price) > 0:
+            sl_dist_pct = abs(float(sl) - float(price)) / float(price) * 100 * int(lev)
+            sl_est_usd = float(usd) * sl_dist_pct / 100
+            sl_info = f"\n🛑 SL 예상: -${sl_est_usd:.2f} ({sl_dist_pct:.1f}%)"
         return (
-            f"{emoji} <b>{sym}</b> {side_kr} \uc9c4\uc785 {lev}x @ {price}\n"
-            f"\U0001f4b0 ${usd} | TP1: {tp1_s} | SL: {sl_s}"
+            f"{emoji} <b>{sym}</b> {side_kr} {type_kr} {lev}x @ {price}\n"
+            f"💰 ${usd} | TP1: {tp1_s} | SL: {sl_s}"
+            f"{tp1_info}{sl_info}"
         )
 
     # TP 익절 (부분/전체)
@@ -108,11 +127,20 @@ def format_line(line: str) -> str:
         tp, sym, pnl, price, pct = m.groups()
         sym = sym.replace("USDT", "")
         pnl_f = float(pnl)
-        emoji = "\U0001f3af" if pnl_f >= 0 else "\u26a0\ufe0f"
-        pnl_kr = "\uc775\uc808" if pnl_f >= 0 else "\uc190\uc808"
+        pct_i = int(pct)
+        if tp == "TP3" or pct_i >= 100:
+            emoji = "🏆"
+            tp_desc = "전체 익절"
+        elif tp == "TP2":
+            emoji = "🎯🎯"
+            tp_desc = f"부분 익절 ({pct}%)"
+        else:
+            emoji = "🎯"
+            tp_desc = f"부분 익절 ({pct}%)"
+        pnl_emoji = "💚" if pnl_f >= 0 else "❤️"
         return (
-            f"{emoji} <b>{sym}</b> {tp} {pnl_kr} ({pct}%) @ {price}\n"
-            f"\U0001f4b5 PnL: {pnl_f:+.4f} USDT"
+            f"{emoji} <b>{sym}</b> {tp} {tp_desc} @ {price}\n"
+            f"{pnl_emoji} PnL: {pnl_f:+.4f} USDT"
         )
 
     # SL 손절
@@ -122,8 +150,8 @@ def format_line(line: str) -> str:
         sym = sym.replace("USDT", "")
         pnl_f = float(pnl)
         return (
-            f"\U0001f534 <b>{sym}</b> \uc190\uc808 @ {price}\n"
-            f"\U0001f4b5 PnL: {pnl_f:+.4f} USDT"
+            f"🛑 <b>{sym}</b> 손절 @ {price}\n"
+            f"💔 PnL: {pnl_f:+.4f} USDT"
         )
 
     # FAIL/ERROR/EMERGENCY 등 기타
@@ -201,10 +229,30 @@ def send_telegram(text: str, chat_id: str = None, reply_to: int = None):
 # ---------------------------------------------------------------------------
 # Dashboard API helper
 # ---------------------------------------------------------------------------
+def _get_dashboard_auth():
+    """config.json에서 dashboard_token 읽어 Basic Auth 헤더 생성"""
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+        token = cfg.get("dashboard_token", "")
+        if token:
+            return "Basic " + base64.b64encode(token.encode()).decode()
+    except Exception:
+        pass
+    return ""
+
+_dash_auth = None
+
 def api_get(path: str):
+    global _dash_auth
+    if _dash_auth is None:
+        _dash_auth = _get_dashboard_auth()
     try:
         url = f"{DASHBOARD_URL}{path}"
-        req = Request(url, headers={"Accept": "application/json"})
+        headers = {"Accept": "application/json"}
+        if _dash_auth:
+            headers["Authorization"] = _dash_auth
+        req = Request(url, headers=headers)
         resp = urlopen(req, timeout=5)
         return json.loads(resp.read().decode())
     except Exception as e:

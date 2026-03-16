@@ -689,10 +689,11 @@ private:
 
             spdlog::info("[W-{}] OK {} {} sz={:.6f} exid={}",
                 wid, sig.action, sig.symbol, sig.size, resp.exchange_order_id);
-            spdlog::info("[TRADE] ENTRY {} {} {}x @ {:.4f} ${:.2f} TP1={:.4f} SL={:.4f}",
-                (sig.action == "buy" ? "LONG" : "SHORT"), sig.symbol, leverage,
+            std::string entry_type = (sig.sig_type == SignalType::ReEntry) ? "REENTRY" : "ENTRY";
+            spdlog::info("[TRADE] {} {} {} {}x @ {:.4f} ${:.2f} TP1={:.4f} SL={:.4f}",
+                entry_type, (sig.action == "buy" ? "LONG" : "SHORT"), sig.symbol, leverage,
                 sig.price, sz.usdt_amount, sig.tp1, sig.sl);
-            m_alerts.info("TRADE", "ENTRY " + sig.action + " " + sig.symbol +
+            m_alerts.info("TRADE", entry_type + " " + sig.action + " " + sig.symbol +
                 " sz=" + std::to_string(sig.size).substr(0,8) + " lev=" + std::to_string(leverage) + "x",
                 sig.symbol);
 

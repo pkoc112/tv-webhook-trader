@@ -7,12 +7,12 @@ PartOf=tv-webhook-trader.service
 [Service]
 Type=simple
 User=ubuntu
-ExecStart=/usr/bin/python3 /opt/tv-webhook-trader/scripts/telegram_alert.py
+ExecStart=/usr/bin/python3 /home/ubuntu/tv-webhook-trader/scripts/telegram_alert.py
 Restart=always
 RestartSec=10
 
 # Environment - load from file so tokens stay out of the unit
-EnvironmentFile=/opt/tv-webhook-trader/.env
+EnvironmentFile=/home/ubuntu/tv-webhook-trader/.env
 
 # Hardening
 NoNewPrivileges=true
