@@ -57,12 +57,21 @@ log = logging.getLogger("tg-bot")
 IMPORTANT_PATTERNS = [
     re.compile(r"\[TRADE\]"),                 # 구조화된 거래 이벤트
     re.compile(r"EMERGENCY CLOSE"),           # 긴급 청산
-    re.compile(r"\bFAIL\b"),                  # 주문 실패
-    re.compile(r"\berror\b", re.IGNORECASE),  # 에러
     re.compile(r"CIRCUIT.?BREAKER", re.IGNORECASE),  # 서킷브레이커
+]
+# 제외 패턴 (레버리지 초기화 등 불필요한 에러)
+IGNORE_PATTERNS = [
+    re.compile(r"Leverage failed.*429"),
+    re.compile(r"Leverage set:"),
+    re.compile(r"Setting leverage:"),
+    re.compile(r"\[REST\].*Leverage"),
+    re.compile(r"\[Sync\]"),
+    re.compile(r"\[Periodic\]"),
 ]
 
 def is_important(line: str) -> bool:
+    if any(p.search(line) for p in IGNORE_PATTERNS):
+        return False
     return any(p.search(line) for p in IMPORTANT_PATTERNS)
 
 # ---------------------------------------------------------------------------
@@ -215,6 +224,40 @@ def load_exchange_keys():
         log.error("Failed to load exchange keys: %s", e)
         return None
 
+def bitget_get(path: str):
+    """Bitget GET API 호출"""
+    keys = load_exchange_keys()
+    if not keys:
+        return None
+    ts = str(int(time.time() * 1000))
+    msg = ts + "GET" + path
+    sig = base64.b64encode(
+        hmac.new(keys["api_secret"].encode(), msg.encode(), hashlib.sha256).digest()
+    ).decode()
+    headers = {
+        "ACCESS-KEY": keys["api_key"],
+        "ACCESS-SIGN": sig,
+        "ACCESS-TIMESTAMP": ts,
+        "ACCESS-PASSPHRASE": keys["passphrase"],
+        "Content-Type": "application/json",
+        "locale": "en-US",
+    }
+    req = Request("https://api.bitget.com" + path, headers=headers)
+    try:
+        resp = urlopen(req, timeout=10)
+        return json.loads(resp.read().decode())
+    except Exception as e:
+        log.warning("Bitget GET %s failed: %s", path, e)
+        return None
+
+def bitget_account():
+    """Bitget 계좌 정보 조회"""
+    return bitget_get("/api/v2/mix/account/account?symbol=BTCUSDT&productType=USDT-FUTURES&marginCoin=USDT")
+
+def bitget_positions():
+    """Bitget 오픈 포지션 조회"""
+    return bitget_get("/api/v2/mix/position/all-position?productType=USDT-FUTURES&marginCoin=USDT")
+
 def bitget_close(symbol: str, hold_side: str):
     keys = load_exchange_keys()
     if not keys:
@@ -261,52 +304,76 @@ def cmd_help(chat_id, msg_id):
     send_telegram(text, chat_id, msg_id)
 
 def cmd_status(chat_id, msg_id):
+    # Bitget 실계좌 데이터
+    acct = bitget_account()
+    pos_data = bitget_positions()
+    # 내부 통계 (승률 등)
     stats = api_get("/api/stats")
-    risk = api_get("/api/risk/status")
-    if not stats:
-        send_telegram("\u274c API \uc5f0\uacb0 \uc2e4\ud328", chat_id, msg_id)
+
+    if not acct or acct.get("code") != "00000":
+        send_telegram("\u274c Bitget API \uc5f0\uacb0 \uc2e4\ud328", chat_id, msg_id)
         return
 
-    p = (risk or {}).get("portfolio", {})
-    bal = stats.get("balance", 0)
-    pnl = stats.get("total_pnl", 0)
-    roi = stats.get("roi_pct", 0)
-    wr = stats.get("win_rate", 0)
-    w = stats.get("wins", 0)
-    l = stats.get("losses", 0)
-    opos = stats.get("open_positions", 0)
-    dd = p.get("current_drawdown_pct", 0)
-    daily = p.get("daily_pnl", 0)
-    cb = p.get("circuit_breaker_active", False)
-    cb_txt = "ON" if cb else "OFF"
+    d = acct.get("data", {})
+    equity = float(d.get("accountEquity", 0))
+    available = float(d.get("available", 0))
+    upl = float(d.get("unrealizedPL", 0))
+    margin = float(d.get("locked", 0))
+
+    # 포지션 수
+    positions = []
+    if pos_data and pos_data.get("code") == "00000":
+        for item in pos_data.get("data", []):
+            qty = float(item.get("total", 0))
+            if qty > 0:
+                positions.append(item)
+    pos_count = len(positions)
+
+    # 내부 통계
+    wr = 0
+    w = 0
+    l = 0
+    if stats:
+        wr = stats.get("win_rate", 0)
+        w = stats.get("wins", 0)
+        l = stats.get("losses", 0)
+
+    margin_pct = (margin / equity * 100) if equity > 0 else 0
+    upl_emoji = "\U0001f7e2" if upl >= 0 else "\U0001f534"
 
     text = (
-        f"<b>\uacc4\uc88c</b>\n"
-        f"\uc794\uace0: ${bal:.2f} | PnL: {pnl:+.4f} ({roi:+.2f}%)\n"
-        f"\uc77c\uac04: {daily:+.4f} | DD: {dd:.2f}%\n"
-        f"\ud3ec\uc9c0\uc158: {opos}\uac1c | \uc2b9\ub960: {wr:.1f}% ({w}W/{l}L)\n"
-        f"\uc11c\ud0b7\ube0c: {cb_txt}"
+        f"<b>\uacc4\uc88c</b> (Bitget)\n"
+        f"\uc790\uc0b0: ${equity:.2f} | \uac00\uc6a9: ${available:.2f}\n"
+        f"{upl_emoji} \ubbf8\uc2e4\ud604PnL: {upl:+.4f} USDT\n"
+        f"\ub9c8\uc9c4: ${margin:.2f} ({margin_pct:.1f}%)\n"
+        f"\ud3ec\uc9c0\uc158: {pos_count}\uac1c | \uc2b9\ub960: {wr:.1f}% ({w}W/{l}L)"
     )
     send_telegram(text, chat_id, msg_id)
 
 def cmd_positions(chat_id, msg_id):
-    data = api_get("/api/positions")
-    if not data:
-        send_telegram("\u274c API \uc5f0\uacb0 \uc2e4\ud328", chat_id, msg_id)
+    pos_data = bitget_positions()
+    if not pos_data or pos_data.get("code") != "00000":
+        send_telegram("\u274c Bitget API \uc5f0\uacb0 \uc2e4\ud328", chat_id, msg_id)
         return
 
-    positions = data if isinstance(data, list) else data.get("positions", [])
+    positions = [p for p in pos_data.get("data", []) if float(p.get("total", 0)) > 0]
     if not positions:
         send_telegram("\ud3ec\uc9c0\uc158 \uc5c6\uc74c", chat_id, msg_id)
         return
 
-    lines = [f"<b>\ud3ec\uc9c0\uc158</b> ({len(positions)}\uac1c)\n"]
-    for p in positions[:20]:
-        s = "\U0001f7e2" if p.get("side") == "long" else "\U0001f534"
+    total_upl = sum(float(p.get("unrealizedPL", 0)) for p in positions)
+    upl_emoji = "\U0001f7e2" if total_upl >= 0 else "\U0001f534"
+    lines = [f"<b>\ud3ec\uc9c0\uc158</b> ({len(positions)}\uac1c) {upl_emoji} {total_upl:+.4f}\n"]
+
+    for p in positions[:25]:
+        side = p.get("holdSide", "?")
+        s = "\U0001f7e2" if side == "long" else "\U0001f534"
         sym = p.get("symbol", "?").replace("USDT", "")
-        tf = p.get("timeframe", "?")
         lev = p.get("leverage", "?")
-        lines.append(f"{s} {sym} {tf}m {lev}x")
+        upl = float(p.get("unrealizedPL", 0))
+        entry = p.get("openPriceAvg", "?")
+        mark = p.get("markPrice", "?")
+        lines.append(f"{s} {sym} {lev}x {upl:+.4f}")
 
     text = "\n".join(lines)
     if len(text) > 4000:
