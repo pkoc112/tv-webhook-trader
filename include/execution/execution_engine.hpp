@@ -849,10 +849,12 @@ private:
             return;
         }
 
-        // 주문 실행 (preset TP/SL 사용하지 않음 — 별도 API로 확실하게 설정)
+        // 주문 실행 (preset TP/SL 포함 — 별도 API보다 안정적)
+        double preset_tp = sig.has_tp1() ? sig.tp1 : 0;
+        double preset_sl = sig.has_sl() ? sig.sl : 0;
         m_order_limiter.acquire();
         m_risk.on_order_placed();
-        auto resp = rest.place_futures_order(order_req);
+        auto resp = rest.place_futures_order(order_req, preset_tp, preset_sl);
         m_risk.on_order_done();
 
         if (resp.status == OrderStatus::New) {
@@ -876,12 +878,10 @@ private:
                 m_state.save_state(m_balance, m_peak_balance, m_positions, m_trades, m_orders_executed.load());
             }
 
-            // TP/SL 처리: 시그널에 TP/SL 가격이 있을 때만 거래소에 설정
-            // TradingView에서 별도 TP/SL 시그널을 보내므로, 기본값 주입 안 함
-            if (sig.has_tp1() || sig.has_sl()) {
-                spdlog::info("[W-{}] Signal TP/SL provided: TP1={:.4f} SL={:.4f} — setting on exchange",
-                    wid, sig.tp1, sig.sl);
-                set_sfx_tpsl(wid, rest, sig);
+            // TP/SL: preset으로 주문에 포함됨. 별도 API 호출 불필요.
+            if (preset_tp > 0 || preset_sl > 0) {
+                spdlog::info("[W-{}] Preset TP/SL included in order: TP={:.4f} SL={:.4f}",
+                    wid, preset_tp, preset_sl);
             } else {
                 spdlog::info("[W-{}] No TP/SL in signal — relying on TV TP/SL signals", wid);
             }
