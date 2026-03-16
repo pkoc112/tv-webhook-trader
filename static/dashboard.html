@@ -1037,20 +1037,22 @@ async function updateStats() {
     const d = await fetchJson('/api/stats');
     if (!d) return;
 
-    // Balance — equity(총자산) 표시, available은 서브로
-    const equity = d.equity || d.balance || 0;
+    // Balance — available(가용잔고) 고정 표시, equity는 서브
     const available = d.balance || 0;
+    const equity = d.equity || available;
     const uPnL = d.unrealized_pnl || 0;
-    document.getElementById('balance').textContent = fmt(equity);
+    document.getElementById('balance').textContent = fmt(available);
     const changeEl = document.getElementById('balanceChange');
-    const pnlPct = equity > 0 ? ((equity - 100) / 100 * 100) : 0;
     const uPnLStr = (uPnL >= 0 ? '+' : '') + uPnL.toFixed(4);
-    changeEl.innerHTML = fmtPnl(pnlPct, 2) + '% | <span style="color:' +
-        (uPnL >= 0 ? 'var(--green)' : 'var(--red)') + '">uPnL: ' + uPnLStr + '</span>';
+    changeEl.innerHTML = '총자산: ' + fmt(equity) +
+        ' | <span style="color:' + (uPnL >= 0 ? 'var(--green)' : 'var(--red)') +
+        '">uPnL: ' + uPnLStr + '</span>';
     changeEl.className = 'sub';
 
     // Total PnL
     const pnl = d.total_pnl || 0;
+    const peak = d.peak_balance || available;
+    const pnlPct = peak > 0 ? (pnl / peak * 100) : 0;
     const pnlEl = document.getElementById('totalPnl');
     pnlEl.textContent = fmtPnl(pnl, 4);
     pnlEl.className = 'value ' + pnlClass(pnl);

@@ -238,23 +238,43 @@ public:
     }
 
     [[nodiscard]] nlohmann::json get_stats() const {
-        // NOTE: m_pos_mtx를 한 번만 잡아서 deadlock 방지
-        // trade_rec.get_stats() 내부에서도 m_pos_mtx를 잡으므로,
-        // 여기서 미리 equity/uPnL/positions 크기를 복사한 후 호출
+        // NOTE: 모든 공유 변수를 한 번의 lock으로 snapshot — deadlock + 불일치 방지
+        // trade_rec.get_stats() 내부에서도 m_pos_mtx를 잡으므로, 여기서 전부 복사
         size_t pos_count;
-        double equity_snap, upnl_snap;
+        double balance_snap, peak_snap, equity_snap, upnl_snap;
+        int total_trades;
+        int wins = 0;
+        double total_pnl = 0;
         {
             std::lock_guard lock(m_pos_mtx);
             pos_count = m_positions.size();
+            balance_snap = m_balance;
+            peak_snap = m_peak_balance;
             equity_snap = m_equity;
             upnl_snap = m_unrealized_pnl;
+            total_trades = static_cast<int>(m_trades.size());
+            for (auto& t : m_trades) {
+                if (t.pnl > 0) wins++;
+                total_pnl += t.pnl;
+            }
         }
-        auto stats = m_trade_rec.get_stats(
-            pos_count, m_orders_executed.load(), m_risk_skips.load(), m_trading.shadow_mode);
-        stats["last_balance_sync"] = m_last_balance_sync.load(std::memory_order_relaxed);
-        stats["ws_connected"] = m_ws_client ? true : false;
+        // 이제 lock 없이 JSON 구성 (trade_rec.get_stats() 호출 안 함)
+        nlohmann::json stats;
+        stats["total_trades"] = total_trades;
+        stats["wins"] = wins;
+        stats["losses"] = total_trades - wins;
+        stats["win_rate"] = total_trades > 0 ? std::round(static_cast<double>(wins) / total_trades * 10000.0) / 100.0 : 0.0;
+        stats["total_pnl"] = std::round(total_pnl * 10000.0) / 10000.0;
+        stats["balance"] = std::round(balance_snap * 100.0) / 100.0;
+        stats["peak_balance"] = std::round(peak_snap * 100.0) / 100.0;
         stats["equity"] = std::round(equity_snap * 100.0) / 100.0;
         stats["unrealized_pnl"] = std::round(upnl_snap * 10000.0) / 10000.0;
+        stats["open_positions"] = pos_count;
+        stats["orders_executed"] = m_orders_executed.load();
+        stats["risk_skips"] = m_risk_skips.load();
+        stats["shadow_mode"] = m_trading.shadow_mode;
+        stats["last_balance_sync"] = m_last_balance_sync.load(std::memory_order_relaxed);
+        stats["ws_connected"] = m_ws_client ? true : false;
         return stats;
     }
 
