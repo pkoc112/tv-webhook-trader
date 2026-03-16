@@ -926,25 +926,48 @@ function handleLogout() {
     document.getElementById('loginError').textContent = '';
 }
 
-// Auto-login if saved token exists
-if (authToken) {
+// Auto-login if saved token exists (모바일 친화: 네트워크 에러 시 토큰 유지)
+let autoLoginRetries = 0;
+function tryAutoLogin() {
+    if (!authToken) return;
     fetch('/api/stats', { headers: { 'Authorization': 'Basic ' + authToken } })
         .then(r => {
             if (r.ok) {
                 document.getElementById('loginOverlay').classList.add('hidden');
-            } else {
+                fetchAllData();
+            } else if (r.status === 401) {
+                // 실제 인증 실패만 토큰 삭제
                 authToken = '';
                 localStorage.removeItem('dash_auth');
                 sessionStorage.removeItem('dash_auth');
             }
+            // 429 등 다른 에러는 토큰 유지, 다음 폴링에서 재시도
         })
-        .catch(() => {});
+        .catch(() => {
+            // 네트워크 에러 — 토큰 삭제하지 않고 재시도
+            if (++autoLoginRetries < 5) {
+                setTimeout(tryAutoLogin, 2000);
+            } else {
+                // 5회 실패 후에도 토큰 유지, 로그인 화면만 표시
+                document.getElementById('loginOverlay').classList.remove('hidden');
+            }
+        });
 }
+tryAutoLogin();
 
+let consecutiveAuthFails = 0;
 async function fetchJson(url) {
     try {
         const r = await fetch(url, { headers: getAuthHeaders() });
-        if (r.status === 401) { handleLogout(); return null; }
+        if (r.status === 401) {
+            // 연속 3회 이상 401일 때만 로그아웃 (일시적 오류 방지)
+            if (++consecutiveAuthFails >= 3) {
+                consecutiveAuthFails = 0;
+                handleLogout();
+            }
+            return null;
+        }
+        consecutiveAuthFails = 0;  // 성공 시 카운터 리셋
         if (!r.ok) return null;
         return await r.json();
     } catch { return null; }
