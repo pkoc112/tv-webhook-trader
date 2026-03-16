@@ -203,16 +203,6 @@ public:
                 reason};
     }
 
-    // 하위 호환: used_margin 없는 버전
-    [[nodiscard]] SizeResult calc_size(
-        double balance, const std::string& symbol, double price,
-        double sl_price, int leverage,
-        const std::optional<SymbolScore>& score, double current_dd_pct) const
-    {
-        return calc_size(balance, symbol, price, sl_price, leverage,
-                        score, current_dd_pct, 0.0);
-    }
-
 private:
     double kelly_fraction(double wr, double avg_w, double avg_l) const {
         if (avg_l <= 0 || avg_w <= 0) return 0.0;
