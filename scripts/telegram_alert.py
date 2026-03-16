@@ -290,7 +290,7 @@ def cmd_status(chat_id, msg_id):
         f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
         f"\U0001f4cb \ud3ec\uc9c0\uc158: <b>{opos}</b>\uac1c\n"
         f"\U0001f3af \uc2b9\ub960: {wr:.1f}% ({wins}W/{losses}L, \ucd1d{total_trades})\n"
-        f"\U0001f6a8 \uc11c\ud0b7\ube0c\ub808\uc774\ucee4: {'ON \u26a0\ufe0f' if cb else 'OFF \u2705'}"
+        f"\U0001f6a8 \uc11c\ud0b7\ube0c\ub808\uc774\ucee4: " + ("ON \u26a0\ufe0f" if cb else "OFF \u2705")
     )
     send_telegram(text, chat_id, msg_id)
 
@@ -456,7 +456,9 @@ def cmd_close(chat_id, msg_id, args: str):
         side = p.get("side", "long")
         r = bitget_close(symbol, side)
         ok = r.get("code") == "00000" if r else False
-        results.append(f"{'\\u2705' if ok else '\\u274c'} {symbol} {side}: {'OK' if ok else r.get('msg', 'FAIL')}")
+        ok_emoji = "\u2705" if ok else "\u274c"
+        status_msg = "OK" if ok else r.get("msg", "FAIL")
+        results.append(f"{ok_emoji} {symbol} {side}: {status_msg}")
         time.sleep(0.3)
 
     send_telegram("\n".join(results), chat_id, msg_id)
