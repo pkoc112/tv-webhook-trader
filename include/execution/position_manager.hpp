@@ -165,7 +165,15 @@ public:
 
     // ── Exchange sync: fetch real balance ──
 
-    void fetch_real_balance(BitgetRestClient& rest) {
+    struct BalanceResult {
+        double available{0.0};
+        double equity{0.0};
+        double unrealized_pnl{0.0};
+        bool ok{false};
+    };
+
+    BalanceResult fetch_real_balance(BitgetRestClient& rest) {
+        BalanceResult result;
         try {
             auto account = rest.get_account();
             auto code = account.value("code", "99999");
@@ -173,12 +181,20 @@ public:
                 auto& data = account["data"];
                 double available = 0.0;
                 double equity = 0.0;
+                double uPnL = 0.0;
                 if (data.contains("available")) {
                     available = std::stod(data["available"].get<std::string>());
                 }
                 if (data.contains("accountEquity")) {
                     equity = std::stod(data["accountEquity"].get<std::string>());
                 }
+                if (data.contains("unrealizedPL")) {
+                    uPnL = std::stod(data["unrealizedPL"].get<std::string>());
+                }
+
+                result.available = available;
+                result.equity = equity;
+                result.unrealized_pnl = uPnL;
 
                 double real_balance = (available > 0) ? available : equity;
                 if (real_balance > 0) {
@@ -190,8 +206,9 @@ public:
                         spdlog::info("[Exec] Peak balance corrected to {:.2f}", m_peak_balance);
                     }
                     m_port_risk.update_balance(m_balance);
-                    spdlog::info("[Exec] Real Bitget balance: available={:.2f} equity={:.2f} -> using {:.2f}",
-                        available, equity, m_balance);
+                    result.ok = true;
+                    spdlog::info("[Exec] Real Bitget balance: available={:.2f} equity={:.2f} uPnL={:.2f}",
+                        available, equity, uPnL);
                 } else {
                     spdlog::warn("[Exec] Bitget returned zero balance, keeping default: {:.2f}", m_balance);
                 }
@@ -202,6 +219,7 @@ public:
         } catch (const std::exception& e) {
             spdlog::error("[Exec] Balance fetch error: {}", e.what());
         }
+        return result;
     }
 
     // ── Exchange sync: bidirectional position reconciliation ──

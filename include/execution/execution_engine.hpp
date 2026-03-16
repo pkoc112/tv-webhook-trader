@@ -243,6 +243,11 @@ public:
             m_orders_executed.load(), m_risk_skips.load(), m_trading.shadow_mode);
         stats["last_balance_sync"] = m_last_balance_sync.load(std::memory_order_relaxed);
         stats["ws_connected"] = m_ws_client ? true : false;
+        {
+            std::lock_guard lock(m_pos_mtx);
+            stats["equity"] = std::round(m_equity * 100.0) / 100.0;
+            stats["unrealized_pnl"] = std::round(m_unrealized_pnl * 10000.0) / 10000.0;
+        }
         return stats;
     }
 
@@ -294,9 +299,15 @@ private:
                 if (upd.available > 0) {
                     std::lock_guard lock(m_pos_mtx);
                     m_balance = upd.available;
+                    m_equity = upd.equity;
+                    m_unrealized_pnl = upd.unrealized_pnl;
                     if (upd.equity > m_peak_balance) m_peak_balance = upd.equity;
                     m_port_risk.update_balance(m_balance);
                 }
+                m_last_balance_sync.store(
+                    static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count()),
+                    std::memory_order_relaxed);
             },
             // position 콜백 — 포지션 청산 감지 → 내부 상태 동기화 + PnL
             [this](const WsPositionUpdate& upd) {
@@ -387,7 +398,12 @@ private:
                 BitgetRestClient sync_rest(sync_ioc, m_auth, m_rest_config);
                 sync_rest.set_contracts(m_contracts);
                 m_pos_mgr.sync_positions_with_exchange(sync_rest, m_orders_executed);
-                m_pos_mgr.fetch_real_balance(sync_rest);
+                auto bal = m_pos_mgr.fetch_real_balance(sync_rest);
+                if (bal.ok) {
+                    std::lock_guard lock(m_pos_mtx);
+                    m_equity = bal.equity;
+                    m_unrealized_pnl = bal.unrealized_pnl;
+                }
 
                 // Update balance sync timestamp (epoch seconds)
                 m_last_balance_sync.store(
@@ -934,6 +950,8 @@ private:
     mutable std::mutex m_pos_mtx;
     double m_balance{100.0};   // 안전 기본값; start() 시 Bitget 실잔고로 덮어씀
     double m_peak_balance{100.0};
+    double m_equity{0.0};          // 총 자산 (available + margin + unrealized PnL)
+    double m_unrealized_pnl{0.0};  // 미실현 PnL
     std::unordered_map<std::string, ManagedPosition> m_positions;
     std::vector<TradeRecord> m_trades;
 

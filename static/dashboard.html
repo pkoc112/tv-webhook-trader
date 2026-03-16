@@ -1037,13 +1037,17 @@ async function updateStats() {
     const d = await fetchJson('/api/stats');
     if (!d) return;
 
-    // Balance
-    const bal = d.balance || 0;
-    document.getElementById('balance').textContent = fmt(bal);
-    const pnlPct = bal > 0 ? ((bal - 100) / 100 * 100) : 0;  // assume 100 USDT start
+    // Balance — equity(총자산) 표시, available은 서브로
+    const equity = d.equity || d.balance || 0;
+    const available = d.balance || 0;
+    const uPnL = d.unrealized_pnl || 0;
+    document.getElementById('balance').textContent = fmt(equity);
     const changeEl = document.getElementById('balanceChange');
-    changeEl.textContent = fmtPnl(pnlPct, 2) + '%';
-    changeEl.className = 'sub ' + pnlClass(pnlPct);
+    const pnlPct = equity > 0 ? ((equity - 100) / 100 * 100) : 0;
+    const uPnLStr = (uPnL >= 0 ? '+' : '') + uPnL.toFixed(4);
+    changeEl.innerHTML = fmtPnl(pnlPct, 2) + '% | <span style="color:' +
+        (uPnL >= 0 ? 'var(--green)' : 'var(--red)') + '">uPnL: ' + uPnLStr + '</span>';
+    changeEl.className = 'sub';
 
     // Total PnL
     const pnl = d.total_pnl || 0;
