@@ -3,6 +3,7 @@
 // ============================================================================
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include "risk/position_sizer.hpp"
 
 using namespace hft;
@@ -60,7 +61,7 @@ TEST(PositionSizer, NormalCaseValidInputs) {
     auto result = sizer.calc_size(
         /*balance=*/1000.0, /*symbol=*/"BTCUSDT", /*price=*/50000.0,
         /*sl_price=*/49000.0, /*leverage=*/10,
-        /*score=*/nullptr, /*current_dd_pct=*/0.0);
+        /*score=*/std::nullopt, /*current_dd_pct=*/0.0);
 
     EXPECT_GT(result.qty, 0.0);
     EXPECT_GT(result.usdt_amount, 0.0);
@@ -75,7 +76,7 @@ TEST(PositionSizer, ZeroBalance) {
     PositionSizer sizer(config);
 
     auto result = sizer.calc_size(
-        0.0, "BTCUSDT", 50000.0, 49000.0, 10, nullptr, 0.0);
+        0.0, "BTCUSDT", 50000.0, 49000.0, 10, std::nullopt, 0.0);
 
     // Available < min_usdt -> insufficient
     EXPECT_DOUBLE_EQ(result.qty, 0.0);
@@ -89,7 +90,7 @@ TEST(PositionSizer, SLEqualsEntryPrice) {
 
     // sl_price == price -> sl_dist = 0 -> should not crash
     auto result = sizer.calc_size(
-        1000.0, "BTCUSDT", 50000.0, 50000.0, 10, nullptr, 0.0);
+        1000.0, "BTCUSDT", 50000.0, 50000.0, 10, std::nullopt, 0.0);
 
     // Should still produce a valid result (falls back to balance_pct)
     EXPECT_GT(result.qty, 0.0);
@@ -103,7 +104,7 @@ TEST(PositionSizer, KellyFractionWithData) {
 
     auto score = make_score("A", 1.2, 20, true, 0.6, 0.05, 0.03);
     auto result = sizer.calc_size(
-        1000.0, "BTCUSDT", 50000.0, 49000.0, 10, &score, 0.0);
+        1000.0, "BTCUSDT", 50000.0, 49000.0, 10, score, 0.0);
 
     // Kelly f = wr - (1-wr)/R = 0.6 - 0.4/(0.05/0.03) = 0.6 - 0.24 = 0.36
     // Scaled by kelly_frac (0.25) -> 0.09, capped by max_risk_pct (0.05)
@@ -120,7 +121,7 @@ TEST(PositionSizer, KellyNotUsedWithoutData) {
 
     auto score = make_score("C", 0.5, 10, false, 0.0, 0.0, 0.0);
     auto result = sizer.calc_size(
-        1000.0, "BTCUSDT", 50000.0, 49000.0, 10, &score, 0.0);
+        1000.0, "BTCUSDT", 50000.0, 49000.0, 10, score, 0.0);
 
     // data_sufficient=false -> no kelly
     EXPECT_EQ(result.method_used, "risk_per_trade");
@@ -132,9 +133,9 @@ TEST(PositionSizer, DrawdownMultiplierReducesSize) {
     PositionSizer sizer(config);
 
     auto result_no_dd = sizer.calc_size(
-        1000.0, "BTCUSDT", 50000.0, 0.0, 10, nullptr, 0.0);
+        1000.0, "BTCUSDT", 50000.0, 0.0, 10, std::nullopt, 0.0);
     auto result_dd15 = sizer.calc_size(
-        1000.0, "BTCUSDT", 50000.0, 0.0, 10, nullptr, 15.0);
+        1000.0, "BTCUSDT", 50000.0, 0.0, 10, std::nullopt, 15.0);
 
     // DD 15% -> multiplier 0.75, so size should be smaller
     EXPECT_LT(result_dd15.usdt_amount, result_no_dd.usdt_amount);
@@ -147,7 +148,7 @@ TEST(PositionSizer, DrawdownHaltsTrading) {
 
     // DD > 50% -> multiplier 0.0 (threshold 100 at 0.0)
     auto result = sizer.calc_size(
-        1000.0, "BTCUSDT", 50000.0, 0.0, 10, nullptr, 55.0);
+        1000.0, "BTCUSDT", 50000.0, 0.0, 10, std::nullopt, 55.0);
 
     EXPECT_DOUBLE_EQ(result.qty, 0.0);
     EXPECT_EQ(result.method_used, "dd_stop");
@@ -160,7 +161,7 @@ TEST(PositionSizer, MinTradeSizeClamping) {
     PositionSizer sizer(config);
 
     auto result = sizer.calc_size(
-        20.0, "BTCUSDT", 50000.0, 0.0, 10, nullptr, 0.0);
+        20.0, "BTCUSDT", 50000.0, 0.0, 10, std::nullopt, 0.0);
 
     // Balance 20, base_pct 30% = 6 USDT, min = 5, should work
     EXPECT_GE(result.usdt_amount, 5.0);
@@ -172,7 +173,7 @@ TEST(PositionSizer, MaxTradeSizeClamping) {
     PositionSizer sizer(config);
 
     auto result = sizer.calc_size(
-        10000.0, "BTCUSDT", 50000.0, 0.0, 10, nullptr, 0.0);
+        10000.0, "BTCUSDT", 50000.0, 0.0, 10, std::nullopt, 0.0);
 
     EXPECT_LE(result.usdt_amount, 100.0);  // hard cap
 }
@@ -183,7 +184,7 @@ TEST(PositionSizer, MaxPctClamping) {
     PositionSizer sizer(config);
 
     auto result = sizer.calc_size(
-        100.0, "BTCUSDT", 50000.0, 0.0, 10, nullptr, 0.0);
+        100.0, "BTCUSDT", 50000.0, 0.0, 10, std::nullopt, 0.0);
 
     EXPECT_LE(result.usdt_amount, 50.0);  // 50% of 100
 }
@@ -197,9 +198,9 @@ TEST(PositionSizer, TierMultiplierAffectsSize) {
     auto score_d = make_score("D", 0.3, 5, false);
 
     auto result_s = sizer.calc_size(
-        1000.0, "BTCUSDT", 50000.0, 0.0, 10, &score_s, 0.0);
+        1000.0, "BTCUSDT", 50000.0, 0.0, 10, score_s, 0.0);
     auto result_d = sizer.calc_size(
-        1000.0, "BTCUSDT", 50000.0, 0.0, 10, &score_d, 0.0);
+        1000.0, "BTCUSDT", 50000.0, 0.0, 10, score_d, 0.0);
 
     // S-tier (1.5x) should produce larger size than D-tier (0.3x)
     EXPECT_GT(result_s.usdt_amount, result_d.usdt_amount);
@@ -214,7 +215,7 @@ TEST(PositionSizer, XTierBlocked) {
 
     auto score_x = make_score("X", 0.0, 5, false);
     auto result = sizer.calc_size(
-        1000.0, "BTCUSDT", 50000.0, 0.0, 10, &score_x, 0.0);
+        1000.0, "BTCUSDT", 50000.0, 0.0, 10, score_x, 0.0);
 
     EXPECT_DOUBLE_EQ(result.qty, 0.0);
     EXPECT_EQ(result.method_used, "blocked");
@@ -227,7 +228,7 @@ TEST(PositionSizer, LeverageCappedByScore) {
 
     auto score = make_score("C", 0.5, 5, false);  // max_leverage = 5
     auto result = sizer.calc_size(
-        1000.0, "BTCUSDT", 50000.0, 49000.0, 20, &score, 0.0);
+        1000.0, "BTCUSDT", 50000.0, 49000.0, 20, score, 0.0);
 
     // Requested 20x but score limits to 5x
     EXPECT_EQ(result.leverage, 5);
@@ -239,9 +240,9 @@ TEST(PositionSizer, UsedMarginReducesAvailable) {
     PositionSizer sizer(config);
 
     auto result_no_margin = sizer.calc_size(
-        1000.0, "BTCUSDT", 50000.0, 0.0, 10, nullptr, 0.0, 0.0);
+        1000.0, "BTCUSDT", 50000.0, 0.0, 10, std::nullopt, 0.0, 0.0);
     auto result_with_margin = sizer.calc_size(
-        1000.0, "BTCUSDT", 50000.0, 0.0, 10, nullptr, 0.0, 500.0);
+        1000.0, "BTCUSDT", 50000.0, 0.0, 10, std::nullopt, 0.0, 500.0);
 
     // With 500 USDT used margin, available is only 500 -> smaller size
     EXPECT_LT(result_with_margin.usdt_amount, result_no_margin.usdt_amount);
@@ -254,7 +255,7 @@ TEST(PositionSizer, RiskPerTradeWithSL) {
 
     // No score data -> risk_per_trade method when SL provided
     auto result = sizer.calc_size(
-        1000.0, "BTCUSDT", 50000.0, 49000.0, 10, nullptr, 0.0);
+        1000.0, "BTCUSDT", 50000.0, 49000.0, 10, std::nullopt, 0.0);
 
     EXPECT_EQ(result.method_used, "risk_per_trade");
     EXPECT_GT(result.risk_usdt, 0.0);
@@ -266,7 +267,7 @@ TEST(PositionSizer, QuantityCorrectlyComputed) {
     PositionSizer sizer(config);
 
     auto result = sizer.calc_size(
-        1000.0, "BTCUSDT", 100.0, 0.0, 10, nullptr, 0.0);
+        1000.0, "BTCUSDT", 100.0, 0.0, 10, std::nullopt, 0.0);
 
     // qty = usdt_amount / price
     EXPECT_NEAR(result.qty, result.usdt_amount / 100.0, 0.01);
