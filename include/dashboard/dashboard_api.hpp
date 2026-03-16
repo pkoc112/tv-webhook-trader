@@ -191,11 +191,11 @@ private:
 
             // Basic Auth check (skip for health endpoint)
             auto target = std::string(req.target());
-            if (target != "/health" && target != "/metrics") {
+            if (target != "/" && target != "/health" && target != "/metrics") {
                 if (!check_auth(req)) {
                     http::response<http::string_body> res{http::status::unauthorized, req.version()};
                     res.set(http::field::content_type, "application/json");
-                    res.set(http::field::www_authenticate, "Basic realm=\"Dashboard\"");
+                    // NOTE: WWW-Authenticate 헤더 제거 — 브라우저 기본 팝업 방지, 커스텀 로그인 폼 사용
                     res.body() = R"({"error":"unauthorized"})";
                     res.prepare_payload();
                     http::write(socket, res);
