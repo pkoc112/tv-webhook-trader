@@ -219,9 +219,11 @@ def load_exchange_keys():
         with open(CONFIG_PATH) as f:
             cfg = json.load(f)
         keys_path = cfg.get("api_keys_path", "")
-        # 상대경로이면 config 파일 디렉토리 기준으로 resolve
+        # 상대경로이면 프로젝트 루트 기준으로 resolve
+        # api_keys_path="config/api_keys.json" → 프로젝트 루트(config의 상위)에서 해석
         if keys_path and not os.path.isabs(keys_path):
-            keys_path = os.path.join(os.path.dirname(CONFIG_PATH), keys_path)
+            project_root = os.path.dirname(os.path.dirname(CONFIG_PATH))
+            keys_path = os.path.join(project_root, keys_path)
         with open(keys_path) as f:
             return json.load(f)
     except Exception as e:
