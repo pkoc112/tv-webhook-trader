@@ -41,6 +41,92 @@ body {
     overflow-x: hidden;
 }
 
+/* ---- Login Overlay ---- */
+.login-overlay {
+    position: fixed;
+    inset: 0;
+    background: var(--bg-primary);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.login-overlay.hidden { display: none; }
+.login-box {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 40px;
+    width: 380px;
+    text-align: center;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.login-box h2 {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--blue);
+    margin-bottom: 8px;
+    font-size: 1.4rem;
+}
+.login-box .subtitle {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-bottom: 28px;
+}
+.login-box input {
+    width: 100%;
+    padding: 12px 16px;
+    margin-bottom: 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    font-family: 'JetBrains Mono', monospace;
+    outline: none;
+    transition: border-color 0.2s;
+}
+.login-box input:focus {
+    border-color: var(--blue);
+}
+.login-box input::placeholder {
+    color: var(--text-muted);
+}
+.login-box button {
+    width: 100%;
+    padding: 12px;
+    background: var(--blue);
+    border: none;
+    border-radius: 8px;
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+    margin-top: 4px;
+}
+.login-box button:hover {
+    background: #2563eb;
+}
+.login-error {
+    color: var(--red);
+    font-size: 0.85rem;
+    margin-top: 12px;
+    min-height: 20px;
+}
+.login-remember {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 18px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+.login-remember input[type="checkbox"] {
+    width: auto;
+    margin: 0;
+    accent-color: var(--blue);
+}
+
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -402,6 +488,23 @@ body {
 </head>
 <body>
 
+<!-- ==================== LOGIN OVERLAY ==================== -->
+<div id="loginOverlay" class="login-overlay">
+    <div class="login-box">
+        <h2>HFT Trader</h2>
+        <p class="subtitle">Dashboard Login</p>
+        <form id="loginForm" onsubmit="return handleLogin(event)">
+            <input type="text" id="loginUser" placeholder="Username" autocomplete="username" autofocus>
+            <input type="password" id="loginPass" placeholder="Password" autocomplete="current-password">
+            <label class="login-remember">
+                <input type="checkbox" id="loginRemember" checked> 로그인 유지
+            </label>
+            <button type="submit">로그인</button>
+        </form>
+        <div id="loginError" class="login-error"></div>
+    </div>
+</div>
+
 <!-- ==================== HEADER ==================== -->
 <div class="header">
     <div class="header-left">
@@ -413,6 +516,7 @@ body {
         <div class="status-dot" id="statusDot"></div>
         <span style="font-size:11px;color:var(--text-muted);font-family:'JetBrains Mono',monospace" id="lastUpdate">...</span>
         <button class="btn" onclick="fetchAllData()">새로고침</button>
+        <button class="btn" onclick="handleLogout()" style="background:var(--red-dim);color:var(--red);margin-left:8px">로그아웃</button>
     </div>
 </div>
 
@@ -764,9 +868,82 @@ function kstNow() {
     return p.Y + '-' + p.M + '-' + p.D + ' ' + p.h + ':' + p.m + ':' + p.s + ' KST';
 }
 
+// ── Auth helpers ──
+let authToken = localStorage.getItem('dash_auth') || sessionStorage.getItem('dash_auth') || '';
+
+function getAuthHeaders() {
+    if (!authToken) return {};
+    return { 'Authorization': 'Basic ' + authToken };
+}
+
+function handleLogin(e) {
+    e.preventDefault();
+    const user = document.getElementById('loginUser').value.trim();
+    const pass = document.getElementById('loginPass').value;
+    const remember = document.getElementById('loginRemember').checked;
+    if (!user || !pass) {
+        document.getElementById('loginError').textContent = '아이디와 비밀번호를 입력하세요';
+        return false;
+    }
+    authToken = btoa(user + ':' + pass);
+    // Test auth with a real API call
+    fetch('/api/stats', { headers: { 'Authorization': 'Basic ' + authToken } })
+        .then(r => {
+            if (r.status === 401) {
+                document.getElementById('loginError').textContent = '아이디 또는 비밀번호가 틀렸습니다';
+                authToken = '';
+                return;
+            }
+            if (r.status === 429) {
+                document.getElementById('loginError').textContent = '요청 제한 초과. 잠시 후 다시 시도하세요';
+                authToken = '';
+                return;
+            }
+            // Success
+            if (remember) {
+                localStorage.setItem('dash_auth', authToken);
+            } else {
+                sessionStorage.setItem('dash_auth', authToken);
+            }
+            document.getElementById('loginOverlay').classList.add('hidden');
+            fetchAllData();
+        })
+        .catch(() => {
+            document.getElementById('loginError').textContent = '서버 연결 실패';
+            authToken = '';
+        });
+    return false;
+}
+
+function handleLogout() {
+    authToken = '';
+    localStorage.removeItem('dash_auth');
+    sessionStorage.removeItem('dash_auth');
+    document.getElementById('loginOverlay').classList.remove('hidden');
+    document.getElementById('loginUser').value = '';
+    document.getElementById('loginPass').value = '';
+    document.getElementById('loginError').textContent = '';
+}
+
+// Auto-login if saved token exists
+if (authToken) {
+    fetch('/api/stats', { headers: { 'Authorization': 'Basic ' + authToken } })
+        .then(r => {
+            if (r.ok) {
+                document.getElementById('loginOverlay').classList.add('hidden');
+            } else {
+                authToken = '';
+                localStorage.removeItem('dash_auth');
+                sessionStorage.removeItem('dash_auth');
+            }
+        })
+        .catch(() => {});
+}
+
 async function fetchJson(url) {
     try {
-        const r = await fetch(url);
+        const r = await fetch(url, { headers: getAuthHeaders() });
+        if (r.status === 401) { handleLogout(); return null; }
         if (!r.ok) return null;
         return await r.json();
     } catch { return null; }
@@ -1235,7 +1412,7 @@ const tfLabels = {'1':'1분','5':'5분','15':'15분','30':'30분','60':'1시간'
 
 async function updateTfStats() {
     try {
-        const resp = await fetch('/api/tf/stats');
+        const resp = await fetch('/api/tf/stats', { headers: getAuthHeaders() });
         const data = await resp.json();
         if (!data.by_timeframe) return;
 

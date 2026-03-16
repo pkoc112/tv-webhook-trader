@@ -58,7 +58,7 @@ struct DashboardRateLimiter {
         std::chrono::steady_clock::time_point window_start;
     };
 
-    int max_requests = 60;
+    int max_requests = 300;
     int window_seconds = 60;
     std::mutex mtx;
     std::unordered_map<std::string, Entry> clients;
