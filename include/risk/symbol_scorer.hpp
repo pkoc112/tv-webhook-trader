@@ -26,17 +26,6 @@
 
 namespace hft {
 
-// -- null-safe JSON value accessor --
-// nlohmann::json .value() throws type_error::306 when key exists but value is null
-// Wraps entire logic in try-catch to prevent any exception propagation
-template<typename T>
-inline T json_safe(const nlohmann::json& j, const std::string& key, T default_val) {
-    try {
-        if (!j.is_object() || !j.contains(key) || j[key].is_null()) return default_val;
-        return j[key].get<T>();
-    } catch (...) { return default_val; }
-}
-
 // -- 거래 기록 (JSON 역직렬화용) --
 struct TradeRecord {
     std::string symbol;
@@ -53,18 +42,19 @@ struct TradeRecord {
 };
 
 inline void from_json(const nlohmann::json& j, TradeRecord& t) {
-    if (!j.is_object()) return;  // guard against null/non-object entries
-    t.symbol      = json_safe<std::string>(j, "symbol", "");
-    t.timeframe   = json_safe<std::string>(j, "timeframe", "");
-    t.exit_reason = json_safe<std::string>(j, "exit_reason", "");
-    t.pnl         = json_safe<double>(j, "pnl", 0.0);
-    t.fee         = json_safe<double>(j, "fee", 0.0);
-    t.entry_price = json_safe<double>(j, "entry_price", 0.0);
-    t.exit_price  = json_safe<double>(j, "exit_price", 0.0);
-    t.quantity    = json_safe<double>(j, "quantity", 0.0);
-    t.strategy    = json_safe<std::string>(j, "strategy", "unknown");
-    t.exchange    = json_safe<std::string>(j, "exchange", "bitget");
-    t.market_type = json_safe<std::string>(j, "market_type", "futures");
+    try {
+        t.symbol      = j.value("symbol", "");
+        t.timeframe   = j.value("timeframe", "");
+        t.exit_reason = j.value("exit_reason", "");
+        t.pnl         = j.value("pnl", 0.0);
+        t.fee         = j.value("fee", 0.0);
+        t.entry_price = j.value("entry_price", 0.0);
+        t.exit_price  = j.value("exit_price", 0.0);
+        t.quantity    = j.value("quantity", 0.0);
+        t.strategy    = j.value("strategy", std::string("unknown"));
+        t.exchange    = j.value("exchange", std::string("bitget"));
+        t.market_type = j.value("market_type", std::string("futures"));
+    } catch (...) {}
 }
 
 // -- TF별 서브 점수 --
@@ -84,11 +74,12 @@ inline void to_json(nlohmann::json& j, const TfSubScore& s) {
 }
 
 inline void from_json(const nlohmann::json& j, TfSubScore& s) {
-    if (!j.is_object()) return;
-    s.trades  = json_safe<int>(j, "trades", 0);
-    s.wins    = json_safe<int>(j, "wins", 0);
-    s.win_rate = json_safe<double>(j, "win_rate", 0.0) / 100.0; // stored as %, load as ratio
-    s.pnl     = json_safe<double>(j, "pnl", 0.0);
+    try {
+        s.trades  = j.value("trades", 0);
+        s.wins    = j.value("wins", 0);
+        s.win_rate = j.value("win_rate", 0.0) / 100.0; // stored as %, load as ratio
+        s.pnl     = j.value("pnl", 0.0);
+    } catch (...) {}
 }
 
 // -- 심볼 점수 --
@@ -145,40 +136,39 @@ inline void to_json(nlohmann::json& j, const SymbolScore& s) {
 }
 
 inline void from_json(const nlohmann::json& j, SymbolScore& s) {
-    if (!j.is_object()) return;  // guard against null/non-object entries
-    s.symbol            = json_safe<std::string>(j, "symbol", "");
-    s.tier              = json_safe<std::string>(j, "tier", "C");
-    s.total_trades      = json_safe<int>(j, "total_trades", 0);
-    s.wins              = json_safe<int>(j, "wins", 0);
-    s.losses            = json_safe<int>(j, "losses", 0);
-    s.win_rate          = json_safe<double>(j, "win_rate", 0.0);
-    s.total_pnl         = json_safe<double>(j, "total_pnl", 0.0);
-    s.avg_pnl           = json_safe<double>(j, "avg_pnl", 0.0);
-    s.avg_win           = json_safe<double>(j, "avg_win", 0.0);
-    s.avg_loss          = json_safe<double>(j, "avg_loss", 0.0);
-    s.profit_factor     = json_safe<double>(j, "profit_factor", 0.0);
-    s.expectancy        = json_safe<double>(j, "expectancy", 0.0);
-    s.consistency       = json_safe<double>(j, "consistency", 0.0);
-    s.signal_count      = json_safe<int>(j, "signal_count", 0);
-    s.frequency_quality = json_safe<double>(j, "frequency_quality", 0.0);
-    s.composite_score   = json_safe<double>(j, "composite_score", 0.0);
-    s.data_sufficient   = json_safe<bool>(j, "data_sufficient", false);
-    s.size_multiplier   = json_safe<double>(j, "size_multiplier", 0.5);
-    s.max_leverage      = json_safe<int>(j, "max_leverage", 10);
-    s.last_updated      = json_safe<std::string>(j, "last_updated", "");
-    if (j.contains("tf_scores") && !j["tf_scores"].is_null()) {
-        try {
+    try {
+        s.symbol            = j.value("symbol", "");
+        s.tier              = j.value("tier", "C");
+        s.total_trades      = j.value("total_trades", 0);
+        s.wins              = j.value("wins", 0);
+        s.losses            = j.value("losses", 0);
+        s.win_rate          = j.value("win_rate", 0.0);
+        s.total_pnl         = j.value("total_pnl", 0.0);
+        s.avg_pnl           = j.value("avg_pnl", 0.0);
+        s.avg_win           = j.value("avg_win", 0.0);
+        s.avg_loss          = j.value("avg_loss", 0.0);
+        s.profit_factor     = j.value("profit_factor", 0.0);
+        s.expectancy        = j.value("expectancy", 0.0);
+        s.consistency       = j.value("consistency", 0.0);
+        s.signal_count      = j.value("signal_count", 0);
+        s.frequency_quality = j.value("frequency_quality", 0.0);
+        s.composite_score   = j.value("composite_score", 0.0);
+        s.data_sufficient   = j.value("data_sufficient", false);
+        s.size_multiplier   = j.value("size_multiplier", 0.5);
+        s.max_leverage      = j.value("max_leverage", 10);
+        s.last_updated      = j.value("last_updated", "");
+        if (j.contains("tf_scores") && j["tf_scores"].is_object()) {
             s.tf_scores = j["tf_scores"].get<std::unordered_map<std::string, TfSubScore>>();
-        } catch (...) {
-            spdlog::warn("[SCORER] Failed to parse tf_scores for {}", s.symbol);
         }
+        s.rev_trades    = j.value("rev_trades", 0);
+        s.rev_wins      = j.value("rev_wins", 0);
+        s.rev_pnl       = j.value("rev_pnl", 0.0);
+        s.rev_win_rate  = j.value("rev_win_rate", 0.0);
+        s.rev_allowed   = j.value("rev_allowed", false);
+        s.rev_score_adj = j.value("rev_score_adj", 0.0);
+    } catch (const std::exception& e) {
+        spdlog::warn("[SCORER] from_json error for {}: {}", s.symbol, e.what());
     }
-    s.rev_trades    = json_safe<int>(j, "rev_trades", 0);
-    s.rev_wins      = json_safe<int>(j, "rev_wins", 0);
-    s.rev_pnl       = json_safe<double>(j, "rev_pnl", 0.0);
-    s.rev_win_rate  = json_safe<double>(j, "rev_win_rate", 0.0);
-    s.rev_allowed   = json_safe<bool>(j, "rev_allowed", false);
-    s.rev_score_adj = json_safe<double>(j, "rev_score_adj", 0.0);
 }
 
 
