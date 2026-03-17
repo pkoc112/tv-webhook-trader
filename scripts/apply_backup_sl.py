@@ -131,19 +131,20 @@ def get_pending_tpsl(keys, symbol=None):
         return data.get("entrustedList", [])
     return data if isinstance(data, list) else []
 
-def place_tpsl_order(keys, symbol, trigger_price, hold_side, size, contracts, dry_run=True):
-    """SL 트리거 주문 설정"""
-    # 심볼별 가격 정밀도 적용
-    ci = contracts.get(symbol, {})
-    pp = ci.get("pricePlace", 4)
-    pes = ci.get("priceEndStep", 1)
-    # long SL은 내림, short SL은 올림 (보수적)
-    if hold_side == "long":
-        trigger_price = round_price_down(trigger_price, pp, pes)
-    else:
-        trigger_price = round_price_up(trigger_price, pp, pes)
-    trigger_str = f"{trigger_price:.{pp}f}"
+def get_mark_price(keys, symbol):
+    """심볼의 현재 마크 가격 조회"""
+    path = f"/api/v2/mix/market/mark-price?symbol={symbol}&productType={PRODUCT_TYPE}"
+    resp = api_request("GET", path, keys=keys)
+    if resp.get("code") == "00000":
+        data = resp.get("data", [])
+        if isinstance(data, list) and data:
+            return float(data[0].get("markPrice", "0"))
+        elif isinstance(data, dict):
+            return float(data.get("markPrice", "0"))
+    return 0
 
+def _do_place_tpsl(keys, symbol, trigger_str, hold_side, size, dry_run):
+    """내부: 실제 TPSL API 호출"""
     body = {
         "symbol": symbol,
         "productType": PRODUCT_TYPE,
@@ -158,17 +159,60 @@ def place_tpsl_order(keys, symbol, trigger_price, hold_side, size, contracts, dr
 
     if dry_run:
         print(f"  [DRY-RUN] Would place SL: {symbol} @ {trigger_str} hold={hold_side} size={size}")
-        return True
+        return True, "00000"
 
     path = "/api/v2/mix/order/place-tpsl-order"
     resp = api_request("POST", path, body=body, keys=keys)
     code = resp.get("code", "99999")
     if code == "00000":
         print(f"  [OK] SL set: {symbol} @ {trigger_str} hold={hold_side}")
-        return True
+        return True, code
     else:
         print(f"  [FAIL] {symbol}: code={code} msg={resp.get('msg', 'unknown')}")
-        return False
+        return False, code
+
+def place_tpsl_order(keys, symbol, trigger_price, hold_side, size, contracts, dry_run=True):
+    """SL 트리거 주문 설정 (실패 시 마크 가격 기준 재시도)"""
+    ci = contracts.get(symbol, {})
+    pp = ci.get("pricePlace", 4)
+    pes = ci.get("priceEndStep", 1)
+
+    # long SL은 내림, short SL은 올림 (보수적)
+    if hold_side == "long":
+        trigger_price = round_price_down(trigger_price, pp, pes)
+    else:
+        trigger_price = round_price_up(trigger_price, pp, pes)
+    trigger_str = f"{trigger_price:.{pp}f}"
+
+    ok, code = _do_place_tpsl(keys, symbol, trigger_str, hold_side, size, dry_run)
+    if ok:
+        return True
+
+    # 실패 code 45122: "stop loss price > mark price" → 이미 3% 이상 손실
+    # 마크 가격 기준 5%로 재시도 (추가 손실 방어)
+    if code == "45122":
+        print(f"    ↳ 이미 entry+3% 초과 손실. 마크 가격 기준 5%로 재시도...")
+        if not dry_run:
+            time.sleep(0.25)
+        mark = get_mark_price(keys, symbol)
+        if mark <= 0:
+            print(f"    ↳ 마크 가격 조회 실패")
+            return False
+
+        FALLBACK_PCT = 0.05  # 5% from current mark price
+        if hold_side == "long":
+            fallback_sl = round_price_down(mark * (1.0 - FALLBACK_PCT), pp, pes)
+        else:
+            fallback_sl = round_price_up(mark * (1.0 + FALLBACK_PCT), pp, pes)
+        fallback_str = f"{fallback_sl:.{pp}f}"
+
+        print(f"    ↳ mark={mark:.6f} → fallback SL={fallback_str} (5% from mark)")
+        if not dry_run:
+            time.sleep(0.25)
+        ok2, _ = _do_place_tpsl(keys, symbol, fallback_str, hold_side, size, dry_run)
+        return ok2
+
+    return False
 
 def main():
     # Parse args
