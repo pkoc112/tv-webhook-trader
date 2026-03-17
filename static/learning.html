@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shadow Learning Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
+<style>
+:root {
+    --bg-primary: #0a0e17;
+    --bg-secondary: #111827;
+    --bg-card: #1a2332;
+    --bg-card-hover: #1e2a3a;
+    --border: #2a3444;
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --green: #10b981;
+    --green-dim: #065f46;
+    --green-bg: rgba(16, 185, 129, 0.1);
+    --red: #ef4444;
+    --red-dim: #7f1d1d;
+    --red-bg: rgba(239, 68, 68, 0.1);
+    --blue: #3b82f6;
+    --blue-bg: rgba(59, 130, 246, 0.1);
+    --yellow: #f59e0b;
+    --yellow-bg: rgba(245, 158, 11, 0.1);
+    --purple: #a78bfa;
+    --orange: #f97316;
+    --gold: #fbbf24;
+    --cyan: #22d3ee;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: 'Noto Sans KR', sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+}
+
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+.header {
+    background: rgba(17, 24, 39, 0.92);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    backdrop-filter: blur(16px);
+}
+.header-left { display: flex; align-items: center; gap: 12px; }
+.header-left h1 {
+    font-size: 16px; font-weight: 700;
+    background: linear-gradient(135deg, #f97316, #fbbf24);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.mode-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; font-weight: 700;
+    padding: 3px 12px; border-radius: 4px;
+}
+.mode-shadow { background: rgba(249,115,22,0.2); color: var(--orange); border: 1px solid rgba(249,115,22,0.4); }
+.mode-live { background: rgba(16,185,129,0.2); color: var(--green); border: 1px solid rgba(16,185,129,0.4); }
+
+.header-right { display: flex; align-items: center; gap: 12px; }
+.btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; padding: 6px 14px;
+    border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg-card); color: var(--text-secondary);
+    cursor: pointer; transition: all 0.2s;
+    text-decoration: none;
+}
+.btn:hover { background: var(--bg-card-hover); color: var(--text-primary); }
+
+.container { max-width: 1600px; margin: 0 auto; padding: 16px 24px; }
+
+/* Stats Grid */
+.stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 16px; }
+.stat-card {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px;
+}
+.stat-card .label { font-size: 11px; color: var(--text-muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+.stat-card .value { font-family: 'JetBrains Mono', monospace; font-size: 24px; font-weight: 700; }
+.stat-card .sub { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+/* Progress Bar */
+.progress-section { margin-bottom: 16px; }
+.progress-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.progress-title { font-size: 14px; font-weight: 600; }
+.progress-pct { font-family: 'JetBrains Mono', monospace; font-size: 14px; color: var(--blue); }
+.progress-track {
+    width: 100%; height: 32px; background: var(--bg-secondary);
+    border-radius: 8px; overflow: hidden; position: relative;
+}
+.progress-fill {
+    height: 100%; border-radius: 8px; transition: width 0.6s ease;
+    display: flex; align-items: center; padding-left: 12px;
+}
+.progress-fill span {
+    font-family: 'JetBrains Mono', monospace; font-size: 12px;
+    font-weight: 600; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+}
+
+/* Cards */
+.card {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px; margin-bottom: 16px;
+}
+.card-title {
+    font-size: 13px; font-weight: 600; color: var(--text-secondary);
+    margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;
+}
+
+/* Two column */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+
+/* Tier Donut */
+.tier-donut-container { display: flex; align-items: center; justify-content: center; gap: 24px; }
+.tier-legend { display: flex; flex-direction: column; gap: 6px; }
+.tier-legend-item { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.tier-dot { width: 12px; height: 12px; border-radius: 3px; }
+
+/* Tier badge */
+.tier-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; font-weight: 700;
+    padding: 2px 8px; border-radius: 4px;
+    display: inline-block;
+}
+.tier-S { background: rgba(251,191,36,0.2); color: #fbbf24; border: 1px solid rgba(251,191,36,0.4); }
+.tier-A { background: rgba(167,139,250,0.2); color: #a78bfa; border: 1px solid rgba(167,139,250,0.4); }
+.tier-B { background: rgba(59,130,246,0.2); color: #3b82f6; border: 1px solid rgba(59,130,246,0.4); }
+.tier-C { background: rgba(148,163,184,0.15); color: #94a3b8; border: 1px solid rgba(148,163,184,0.3); }
+.tier-D { background: rgba(239,68,68,0.15); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
+.tier-X { background: rgba(100,116,139,0.15); color: #64748b; border: 1px solid rgba(100,116,139,0.3); }
+
+/* Table */
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th { text-align: left; padding: 8px 10px; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 500; font-size: 11px; position: sticky; top: 0; background: var(--bg-card); }
+td { padding: 7px 10px; border-bottom: 1px solid rgba(42,52,68,0.3); font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+tr:hover { background: var(--bg-card-hover); }
+
+.table-scroll { max-height: 500px; overflow-y: auto; }
+.table-scroll-lg { max-height: 700px; overflow-y: auto; }
+.pnl-pos { color: var(--green); }
+.pnl-neg { color: var(--red); }
+.pnl-zero { color: var(--text-muted); }
+
+/* Filter tabs */
+.filter-tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+.filter-tab {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; padding: 5px 12px;
+    border-radius: 6px; border: 1px solid var(--border);
+    background: transparent; color: var(--text-muted);
+    cursor: pointer; transition: all 0.2s;
+}
+.filter-tab.active { background: var(--blue-bg); color: var(--blue); border-color: var(--blue); }
+.filter-tab:hover:not(.active) { background: var(--bg-card-hover); color: var(--text-secondary); }
+
+.search-input {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; padding: 6px 12px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg-secondary); color: var(--text-primary);
+    outline: none; width: 200px;
+}
+.search-input:focus { border-color: var(--blue); }
+
+.empty-state { text-align: center; color: var(--text-muted); font-size: 12px; padding: 30px 16px; }
+
+/* Live readiness meter */
+.readiness-meter { display: flex; gap: 4px; margin-top: 8px; }
+.readiness-seg {
+    flex: 1; height: 8px; background: var(--bg-secondary);
+    border-radius: 2px; transition: background 0.3s;
+}
+.readiness-seg.filled { background: var(--green); }
+.readiness-seg.partial { background: var(--yellow); }
+
+@media (max-width: 1200px) {
+    .stats-grid { grid-template-columns: repeat(3, 1fr); }
+    .two-col, .three-col { grid-template-columns: 1fr; }
+}
+@media (max-width: 768px) {
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+    <div class="header-left">
+        <h1>Shadow Learning</h1>
+        <span id="modeBadge" class="mode-badge mode-shadow">SHADOW MODE</span>
+        <span id="liveMinTier" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted)">Live Min: B</span>
+    </div>
+    <div class="header-right">
+        <span style="font-size:11px;color:var(--text-muted);font-family:'JetBrains Mono',monospace" id="lastUpdate">...</span>
+        <button class="btn" onclick="refreshAll()">새로고침</button>
+        <a href="/" class="btn">메인 대시보드</a>
+    </div>
+</div>
+
+<div class="container">
+
+<!-- SUMMARY STATS -->
+<div class="stats-grid" id="summaryStats">
+    <div class="stat-card">
+        <div class="label">총 학습 심볼</div>
+        <div class="value" id="totalScored">-</div>
+        <div class="sub" id="totalScoredSub">529 중 -개 학습됨</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">데이터 충분 (20+거래)</div>
+        <div class="value" id="dataSufficient" style="color:var(--blue)">-</div>
+        <div class="sub" id="dataSufficientPct">-%</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Live 준비 완료</div>
+        <div class="value" id="liveReady" style="color:var(--green)">-</div>
+        <div class="sub" id="liveReadySub">B+ 티어 검증 심볼</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">오픈 포지션</div>
+        <div class="value" id="openPositions">-</div>
+        <div class="sub" id="positionLimit">한도: -</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">총 거래 수</div>
+        <div class="value" id="totalTrades">-</div>
+        <div class="sub" id="tradesSub">목표: 10,580+</div>
+    </div>
+</div>
+
+<!-- LEARNING PROGRESS -->
+<div class="card">
+    <div class="card-title">학습 진행률</div>
+    <div class="progress-section">
+        <div class="progress-header">
+            <span class="progress-title">데이터 수집 (20거래 이상)</span>
+            <span class="progress-pct" id="dataProgressPct">0%</span>
+        </div>
+        <div class="progress-track">
+            <div class="progress-fill" id="dataProgressBar" style="width:0%;background:linear-gradient(90deg,var(--blue),var(--cyan))">
+                <span id="dataProgressLabel">0 / 529</span>
+            </div>
+        </div>
+    </div>
+    <div class="progress-section" style="margin-top:12px">
+        <div class="progress-header">
+            <span class="progress-title">Live 준비 (B+ 티어)</span>
+            <span class="progress-pct" id="liveProgressPct">0%</span>
+        </div>
+        <div class="progress-track">
+            <div class="progress-fill" id="liveProgressBar" style="width:0%;background:linear-gradient(90deg,var(--green),#34d399)">
+                <span id="liveProgressLabel">0 / 529</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- TIER DISTRIBUTION + LIVE READINESS -->
+<div class="two-col">
+    <div class="card">
+        <div class="card-title">티어 분포</div>
+        <div id="tierDistChart"></div>
+        <div style="margin-top:12px">
+            <table>
+                <thead><tr><th>티어</th><th>심볼 수</th><th>거래 수</th><th>총 PnL</th><th>평균 점수</th><th>Live</th></tr></thead>
+                <tbody id="tierTableBody"></tbody>
+            </table>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-title">학습 단계별 현황</div>
+        <div id="learningStages"></div>
+        <div style="margin-top:16px">
+            <div class="card-title">Live 전환 조건</div>
+            <div id="liveConditions" style="font-size:12px;line-height:1.8"></div>
+        </div>
+    </div>
+</div>
+
+<!-- SYMBOL TABLE -->
+<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div class="card-title" style="margin-bottom:0">심볼별 학습 상태</div>
+        <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" class="search-input" id="symbolSearch" placeholder="심볼 검색..." oninput="renderSymbolTable()">
+            <select id="tierFilter" class="search-input" style="width:100px" onchange="renderSymbolTable()">
+                <option value="all">전체</option>
+                <option value="live">Live Ready</option>
+                <option value="learning">학습 중</option>
+                <option value="S">S 티어</option>
+                <option value="A">A 티어</option>
+                <option value="B">B 티어</option>
+                <option value="C">C 티어</option>
+                <option value="D">D 티어</option>
+                <option value="X">X 티어</option>
+            </select>
+            <select id="sortBy" class="search-input" style="width:120px" onchange="renderSymbolTable()">
+                <option value="score">점수순</option>
+                <option value="trades">거래순</option>
+                <option value="pnl">PnL순</option>
+                <option value="winrate">승률순</option>
+                <option value="name">이름순</option>
+                <option value="progress">진행률순</option>
+            </select>
+        </div>
+    </div>
+    <div class="table-scroll-lg">
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>심볼</th>
+                    <th>티어</th>
+                    <th>점수</th>
+                    <th>거래</th>
+                    <th>진행률</th>
+                    <th>승률</th>
+                    <th>PnL</th>
+                    <th>Avg PnL</th>
+                    <th>PF</th>
+                    <th>Expectancy</th>
+                    <th>사이즈 배수</th>
+                    <th>레버리지</th>
+                    <th>Live</th>
+                </tr>
+            </thead>
+            <tbody id="symbolTableBody"></tbody>
+        </table>
+    </div>
+    <div style="margin-top:8px;font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between" id="tableFooter">
+        <span id="tableCount">0 심볼</span>
+        <span id="tableLastUpdate">-</span>
+    </div>
+</div>
+
+<!-- POSITIONS (Shadow) -->
+<div class="card">
+    <div class="card-title">Shadow 오픈 포지션 <span id="posCount" style="color:var(--text-muted);font-weight:400">(0)</span></div>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>심볼</th><th>방향</th><th>TF</th><th>진입가</th><th>수량</th><th>레버리지</th><th>티어</th><th>전략</th></tr></thead>
+            <tbody id="positionsBody"></tbody>
+        </table>
+    </div>
+</div>
+
+</div>
+
+<script>
+const TIER_ORDER = ['S','A','B','C','D','X'];
+const TIER_COLORS = { S:'#fbbf24', A:'#a78bfa', B:'#3b82f6', C:'#94a3b8', D:'#ef4444', X:'#64748b' };
+const MIN_TRADES = 20;
+const TOTAL_SYMBOLS = 529;
+
+let authToken = '';
+let symbolScores = [];
+let riskStatus = {};
+let statsData = {};
+let positionsData = [];
+
+function getAuth() {
+    authToken = localStorage.getItem('hft_auth') || sessionStorage.getItem('hft_auth') || '';
+    if (!authToken) {
+        window.location.href = '/';
+    }
+}
+
+async function fetchJson(url) {
+    try {
+        const r = await fetch(url, { headers: { 'Authorization': 'Basic ' + authToken } });
+        if (r.status === 401) { window.location.href = '/'; return null; }
+        if (!r.ok) return null;
+        return await r.json();
+    } catch { return null; }
+}
+
+function fmt(v, d=2) { return v != null ? Number(v).toFixed(d) : '-'; }
+function fmtPnl(v, d=4) {
+    if (v == null) return '-';
+    const n = Number(v);
+    const prefix = n > 0 ? '+' : '';
+    return prefix + n.toFixed(d);
+}
+function pnlClass(v) { return v > 0 ? 'pnl-pos' : v < 0 ? 'pnl-neg' : 'pnl-zero'; }
+
+async function refreshAll() {
+    getAuth();
+    const [scores, risk, stats, positions] = await Promise.all([
+        fetchJson('/api/symbols/scores'),
+        fetchJson('/api/risk/status'),
+        fetchJson('/api/stats'),
+        fetchJson('/api/positions')
+    ]);
+
+    symbolScores = Array.isArray(scores) ? scores : (scores?.scores || []);
+    riskStatus = risk || {};
+    statsData = stats || {};
+    positionsData = Array.isArray(positions) ? positions : [];
+
+    updateSummary();
+    updateProgress();
+    updateTierDist();
+    updateLearningStages();
+    renderSymbolTable();
+    renderPositions();
+
+    document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('ko-KR');
+}
+
+function updateSummary() {
+    const learning = riskStatus.learning || {};
+    const totalScored = learning.total_scored || symbolScores.length;
+    const dataSufficient = learning.data_sufficient || symbolScores.filter(s => s.data_sufficient).length;
+    const liveReady = learning.live_ready_symbols || 0;
+    const shadowMode = learning.shadow_mode !== false;
+    const liveMinTier = learning.live_min_tier || 'B';
+
+    document.getElementById('totalScored').textContent = totalScored;
+    document.getElementById('totalScoredSub').textContent = `${TOTAL_SYMBOLS} 중 ${totalScored}개 학습됨`;
+    document.getElementById('dataSufficient').textContent = dataSufficient;
+    document.getElementById('dataSufficientPct').textContent = totalScored > 0 ? `${(dataSufficient/totalScored*100).toFixed(1)}% 충분` : '-';
+    document.getElementById('liveReady').textContent = liveReady;
+    document.getElementById('liveReadySub').textContent = `${liveMinTier}+ 티어 검증 심볼`;
+
+    const totalPos = riskStatus.portfolio?.total_positions || positionsData.length;
+    document.getElementById('openPositions').textContent = totalPos;
+    document.getElementById('positionLimit').textContent = shadowMode ? '한도: 200 (shadow)' : '한도: 15 (live)';
+
+    const totalTrades = statsData.total_trades || 0;
+    document.getElementById('totalTrades').textContent = totalTrades.toLocaleString();
+    document.getElementById('tradesSub').textContent = `목표: ${(TOTAL_SYMBOLS * MIN_TRADES).toLocaleString()}+`;
+
+    // Mode badge
+    const badge = document.getElementById('modeBadge');
+    if (shadowMode) {
+        badge.textContent = 'SHADOW MODE';
+        badge.className = 'mode-badge mode-shadow';
+    } else {
+        badge.textContent = 'LIVE MODE';
+        badge.className = 'mode-badge mode-live';
+    }
+    document.getElementById('liveMinTier').textContent = `Live Min: ${liveMinTier}`;
+}
+
+function updateProgress() {
+    const learning = riskStatus.learning || {};
+    const dataSufficient = learning.data_sufficient || symbolScores.filter(s => s.data_sufficient).length;
+    const liveReady = learning.live_ready_symbols || 0;
+
+    // Data collection progress
+    const dataPct = Math.min(100, dataSufficient / TOTAL_SYMBOLS * 100);
+    document.getElementById('dataProgressPct').textContent = dataPct.toFixed(1) + '%';
+    document.getElementById('dataProgressBar').style.width = dataPct + '%';
+    document.getElementById('dataProgressLabel').textContent = `${dataSufficient} / ${TOTAL_SYMBOLS}`;
+
+    // Live readiness progress
+    const livePct = Math.min(100, liveReady / TOTAL_SYMBOLS * 100);
+    document.getElementById('liveProgressPct').textContent = livePct.toFixed(1) + '%';
+    document.getElementById('liveProgressBar').style.width = livePct + '%';
+    document.getElementById('liveProgressLabel').textContent = `${liveReady} / ${TOTAL_SYMBOLS}`;
+}
+
+function updateTierDist() {
+    const tierGroups = {};
+    TIER_ORDER.forEach(t => tierGroups[t] = { count:0, trades:0, pnl:0, scoreSum:0 });
+
+    symbolScores.forEach(s => {
+        const t = s.tier || 'C';
+        if (!tierGroups[t]) tierGroups[t] = { count:0, trades:0, pnl:0, scoreSum:0 };
+        tierGroups[t].count++;
+        tierGroups[t].trades += s.total_trades || 0;
+        tierGroups[t].pnl += s.total_pnl || 0;
+        tierGroups[t].scoreSum += s.composite_score || 0;
+    });
+
+    const total = symbolScores.length || 1;
+    const liveMinTier = (riskStatus.learning || {}).live_min_tier || 'B';
+    const liveableTiers = getLiveableTiers(liveMinTier);
+
+    // Chart
+    let chartHtml = '';
+    TIER_ORDER.forEach(t => {
+        const g = tierGroups[t];
+        if (g.count === 0) return;
+        const pct = (g.count / total * 100).toFixed(0);
+        const isLive = liveableTiers.includes(t);
+        chartHtml += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <span class="tier-badge tier-${t}" style="min-width:32px;text-align:center">${t}</span>
+            <div style="flex:1;height:24px;background:var(--bg-secondary);border-radius:4px;overflow:hidden;position:relative">
+                <div style="height:100%;width:${pct}%;background:${TIER_COLORS[t]};border-radius:4px;display:flex;align-items:center;padding-left:8px;transition:width 0.4s">
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:600;color:white">${g.count} (${pct}%)</span>
+                </div>
+            </div>
+            <span style="font-size:10px;min-width:45px;text-align:right;color:${isLive ? 'var(--green)' : 'var(--text-muted)'}">${isLive ? 'LIVE' : ''}</span>
+        </div>`;
+    });
+    document.getElementById('tierDistChart').innerHTML = chartHtml || '<div class="empty-state">데이터 없음</div>';
+
+    // Table
+    let tableHtml = '';
+    TIER_ORDER.forEach(t => {
+        const g = tierGroups[t];
+        if (g.count === 0) return;
+        const avgScore = g.count > 0 ? g.scoreSum / g.count : 0;
+        const isLive = liveableTiers.includes(t);
+        tableHtml += `<tr>
+            <td><span class="tier-badge tier-${t}">${t}</span></td>
+            <td>${g.count}</td>
+            <td>${g.trades.toLocaleString()}</td>
+            <td class="${pnlClass(g.pnl)}">${fmtPnl(g.pnl, 4)}</td>
+            <td>${fmt(avgScore, 1)}</td>
+            <td style="color:${isLive ? 'var(--green)' : 'var(--text-muted)'}">${isLive ? 'O' : 'X'}</td>
+        </tr>`;
+    });
+    document.getElementById('tierTableBody').innerHTML = tableHtml || '<tr><td colspan="6" class="empty-state">데이터 없음</td></tr>';
+}
+
+function getLiveableTiers(minTier) {
+    const idx = TIER_ORDER.indexOf(minTier);
+    return idx >= 0 ? TIER_ORDER.slice(0, idx + 1) : ['S','A','B'];
+}
+
+function updateLearningStages() {
+    const noData = symbolScores.filter(s => (s.total_trades || 0) === 0).length;
+    const insufficient = symbolScores.filter(s => {
+        const t = s.total_trades || 0;
+        return t > 0 && t < MIN_TRADES;
+    }).length;
+    const sufficient = symbolScores.filter(s => s.data_sufficient).length;
+    const unscored = TOTAL_SYMBOLS - symbolScores.length;
+
+    const stages = [
+        { label: '미수신 (시그널 없음)', count: unscored, color: 'var(--text-muted)', icon: '⬜' },
+        { label: '데이터 없음 (0거래)', count: noData, color: 'var(--red)', icon: '🔴' },
+        { label: '학습 중 (1~19거래)', count: insufficient, color: 'var(--yellow)', icon: '🟡' },
+        { label: '데이터 충분 (20+거래)', count: sufficient, color: 'var(--green)', icon: '🟢' }
+    ];
+
+    let html = '';
+    stages.forEach(s => {
+        const pct = (s.count / TOTAL_SYMBOLS * 100).toFixed(1);
+        html += `<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:8px 12px;background:var(--bg-secondary);border-radius:8px">
+            <span style="font-size:16px">${s.icon}</span>
+            <div style="flex:1">
+                <div style="font-size:12px;color:var(--text-secondary)">${s.label}</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;color:${s.color}">${s.count}개 <span style="font-size:11px;color:var(--text-muted)">(${pct}%)</span></div>
+            </div>
+        </div>`;
+    });
+    document.getElementById('learningStages').innerHTML = html;
+
+    // Live conditions
+    const liveMinTier = (riskStatus.learning || {}).live_min_tier || 'B';
+    const liveReady = (riskStatus.learning || {}).live_ready_symbols || 0;
+    const totalTrades = statsData.total_trades || 0;
+
+    const conditions = [
+        { text: `데이터 충분 심볼 50개 이상`, met: sufficient >= 50, current: `${sufficient}/50` },
+        { text: `Live Ready (${liveMinTier}+) 20개 이상`, met: liveReady >= 20, current: `${liveReady}/20` },
+        { text: `총 거래 1,000건 이상`, met: totalTrades >= 1000, current: `${totalTrades}/1000` },
+        { text: `S/A 티어 5개 이상`, met: symbolScores.filter(s => s.tier === 'S' || s.tier === 'A').length >= 5, current: `${symbolScores.filter(s => s.tier === 'S' || s.tier === 'A').length}/5` }
+    ];
+
+    let condHtml = '';
+    conditions.forEach(c => {
+        const icon = c.met ? '<span style="color:var(--green)">&#10003;</span>' : '<span style="color:var(--red)">&#10007;</span>';
+        condHtml += `<div style="margin-bottom:4px">${icon} ${c.text} <span style="font-family:'JetBrains Mono',monospace;color:var(--text-muted)">(${c.current})</span></div>`;
+    });
+    document.getElementById('liveConditions').innerHTML = condHtml;
+}
+
+function renderSymbolTable() {
+    const search = (document.getElementById('symbolSearch').value || '').toUpperCase();
+    const tierFilter = document.getElementById('tierFilter').value;
+    const sortBy = document.getElementById('sortBy').value;
+    const liveMinTier = (riskStatus.learning || {}).live_min_tier || 'B';
+    const liveableTiers = getLiveableTiers(liveMinTier);
+
+    let filtered = symbolScores.filter(s => {
+        if (search && !(s.symbol || '').toUpperCase().includes(search)) return false;
+        if (tierFilter === 'live') return s.data_sufficient && liveableTiers.includes(s.tier);
+        if (tierFilter === 'learning') return !s.data_sufficient;
+        if (tierFilter !== 'all' && s.tier !== tierFilter) return false;
+        return true;
+    });
+
+    // Sort
+    filtered.sort((a, b) => {
+        switch(sortBy) {
+            case 'score': return (b.composite_score || 0) - (a.composite_score || 0);
+            case 'trades': return (b.total_trades || 0) - (a.total_trades || 0);
+            case 'pnl': return (b.total_pnl || 0) - (a.total_pnl || 0);
+            case 'winrate': return (b.win_rate || 0) - (a.win_rate || 0);
+            case 'name': return (a.symbol || '').localeCompare(b.symbol || '');
+            case 'progress': return (b.total_trades || 0) / MIN_TRADES - (a.total_trades || 0) / MIN_TRADES;
+            default: return 0;
+        }
+    });
+
+    const tbody = document.getElementById('symbolTableBody');
+    if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="14" class="empty-state">해당 조건의 심볼이 없습니다</td></tr>';
+        document.getElementById('tableCount').textContent = '0 심볼';
+        return;
+    }
+
+    tbody.innerHTML = filtered.map((s, i) => {
+        const wr = s.win_rate != null ? (s.win_rate > 1 ? s.win_rate : s.win_rate * 100) : 0;
+        const trades = s.total_trades || 0;
+        const progressPct = Math.min(100, trades / MIN_TRADES * 100);
+        const isLive = s.data_sufficient && liveableTiers.includes(s.tier);
+
+        // Progress bar mini
+        const progressColor = progressPct >= 100 ? 'var(--green)' : progressPct >= 50 ? 'var(--yellow)' : 'var(--red)';
+        const progressBar = `<div style="display:flex;align-items:center;gap:6px">
+            <div style="width:50px;height:6px;background:var(--bg-secondary);border-radius:3px;overflow:hidden">
+                <div style="width:${progressPct}%;height:100%;background:${progressColor};border-radius:3px"></div>
+            </div>
+            <span style="font-size:10px;color:var(--text-muted)">${trades}/${MIN_TRADES}</span>
+        </div>`;
+
+        const liveIcon = isLive
+            ? '<span style="color:var(--green);font-weight:700">READY</span>'
+            : trades >= MIN_TRADES
+                ? '<span style="color:var(--yellow)">TIER</span>'
+                : '<span style="color:var(--text-muted)">-</span>';
+
+        return `<tr>
+            <td style="color:var(--text-muted)">${i+1}</td>
+            <td style="font-weight:600">${(s.symbol||'').replace('USDT','')}</td>
+            <td><span class="tier-badge tier-${s.tier}">${s.tier}</span></td>
+            <td>${fmt(s.composite_score,1)}</td>
+            <td>${trades}</td>
+            <td>${progressBar}</td>
+            <td>${fmt(wr,1)}%</td>
+            <td class="${pnlClass(s.total_pnl)}">${fmtPnl(s.total_pnl,4)}</td>
+            <td class="${pnlClass(s.avg_pnl)}">${fmtPnl(s.avg_pnl,4)}</td>
+            <td>${fmt(s.profit_factor,2)}</td>
+            <td class="${pnlClass(s.expectancy)}">${fmtPnl(s.expectancy,4)}</td>
+            <td>${fmt(s.size_multiplier,2)}x</td>
+            <td>${s.max_leverage||'-'}x</td>
+            <td>${liveIcon}</td>
+        </tr>`;
+    }).join('');
+
+    document.getElementById('tableCount').textContent = `${filtered.length} 심볼`;
+    document.getElementById('tableLastUpdate').textContent = `최종 업데이트: ${new Date().toLocaleTimeString('ko-KR')}`;
+}
+
+function renderPositions() {
+    const tbody = document.getElementById('positionsBody');
+    document.getElementById('posCount').textContent = `(${positionsData.length})`;
+
+    if (positionsData.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-state">오픈 포지션 없음</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = positionsData.map(p => {
+        const sideColor = p.side === 'long' ? 'var(--green)' : 'var(--red)';
+        return `<tr>
+            <td style="font-weight:600">${(p.symbol||'').replace('USDT','')}</td>
+            <td style="color:${sideColor};font-weight:600">${(p.side||'').toUpperCase()}</td>
+            <td>${p.timeframe || '-'}</td>
+            <td>${fmt(p.entry_price, 4)}</td>
+            <td>${fmt(p.quantity, 6)}</td>
+            <td>${p.leverage || '-'}x</td>
+            <td><span class="tier-badge tier-${p.tier||'C'}">${p.tier||'C'}</span></td>
+            <td style="color:var(--text-muted)">${p.strategy || '-'}</td>
+        </tr>`;
+    }).join('');
+}
+
+// Init
+getAuth();
+refreshAll();
+setInterval(refreshAll, 10000);
+</script>
+</body>
+</html>

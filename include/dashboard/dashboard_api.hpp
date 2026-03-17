@@ -313,6 +313,9 @@ private:
             if (target == "/" || target == "/index.html" || target == "/dashboard.html") {
                 return serve_file("dashboard.html", "text/html");
             }
+            if (target == "/learning.html" || target == "/learning") {
+                return serve_file("learning.html", "text/html");
+            }
             // 정적 파일 서빙 (with path traversal protection)
             if (target.starts_with("/static/")) {
                 auto file = target.substr(8);
