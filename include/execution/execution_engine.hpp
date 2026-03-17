@@ -836,7 +836,7 @@ private:
                         return;
                     } else if (grade == "C" && total >= 10) {
                         // C 등급, 10거래 이상이면 차단 (충분히 검증된 C)
-                        spdlog::info("[W-{}] SHADOW_SKIP {}: grade=C total={} pnl={:.4f} (marginal, blocked)",
+                        spdlog::info("[W-{}] SHADOW_SKIP {}: grade={} total={} pnl={:.4f} (marginal, blocked)",
                             wid, sig.symbol, grade, total, pnl);
                         m_risk_skips.fetch_add(1);
                         return;
