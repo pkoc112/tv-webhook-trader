@@ -516,7 +516,9 @@ private:
             std::ifstream f(path);
             auto data = nlohmann::json::parse(f);
             std::lock_guard lock(m_mtx);
-            for (auto& [sym, sd] : data.value("scores", nlohmann::json::object()).items()) {
+            // IMPORTANT: store in variable to avoid dangling reference from temporary
+            auto scores_json = data.value("scores", nlohmann::json::object());
+            for (auto& [sym, sd] : scores_json.items()) {
                 m_scores[sym] = sd.get<SymbolScore>();
             }
             spdlog::info("[SCORER] Loaded {} symbols", m_scores.size());
