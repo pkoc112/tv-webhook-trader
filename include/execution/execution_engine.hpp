@@ -74,6 +74,7 @@ struct TradingConfig {
     double order_rate_limit{9.0};
     double tpsl_rate_limit{9.0};
     bool   shadow_mode{false};   // true = 로그만, 실주문 안함
+    bool   auto_live{true};      // true = Shadow→Live 자동 전환
     double backup_sl_pct{0.03};  // 백업 SL: TV SL 없을 때 3% 안전망
     std::unordered_set<std::string> allowed_symbols;
     std::unordered_map<std::string, double> symbol_sizes;
@@ -410,7 +411,34 @@ public:
     [[nodiscard]] nlohmann::json get_readiness_json() const {
         auto futures_report = m_shadow.get_symbol_report();
         auto spot_report = m_spot_shadow.get_symbol_report();
-        return m_readiness.get_readiness_json(futures_report, spot_report);
+        auto result = m_readiness.get_readiness_json(futures_report, spot_report);
+
+        // TF별 상세 데이터 추가
+        auto futures_tf = m_shadow.get_symbol_tf_report();
+        auto spot_tf = m_spot_shadow.get_symbol_tf_report();
+        result["futures_by_tf"] = futures_tf;
+        result["spot_by_tf"] = spot_tf;
+
+        // 자동 전환 상태
+        result["auto_live"] = nlohmann::json{
+            {"enabled", m_trading.auto_live},
+            {"active", m_auto_live_active.load()},
+            {"shadow_mode", m_trading.shadow_mode},
+            {"eligible_count", [this]() {
+                std::lock_guard elock(m_eligible_mtx);
+                return m_eligible_keys.size();
+            }()}
+        };
+
+        // 적격 심볼 목록
+        {
+            std::lock_guard elock(m_eligible_mtx);
+            auto earr = nlohmann::json::array();
+            for (auto& k : m_eligible_keys) earr.push_back(k);
+            result["eligible_symbols"] = earr;
+        }
+
+        return result;
     }
 
     // ── 전체 선물 포지션 긴급 청산 ──
@@ -689,6 +717,58 @@ private:
                 m_spot_shadow.save_state();
             } catch (const std::exception& e) {
                 spdlog::warn("[Periodic] Sync failed: {}", e.what());
+            }
+
+            // ★ 자동 Live 전환 체크 (심볼+TF별 평가)
+            if (m_trading.auto_live) {
+                try {
+                    auto futures_tf = m_shadow.get_symbol_tf_report();
+                    auto spot_tf = m_spot_shadow.get_symbol_tf_report();
+
+                    std::unordered_set<std::string> new_eligible;
+                    auto ps = m_readiness.refresh_eligible(futures_tf, spot_tf, new_eligible);
+
+                    {
+                        std::lock_guard elock(m_eligible_mtx);
+                        m_eligible_keys = std::move(new_eligible);
+                    }
+
+                    if (ps.can_go_live && m_trading.shadow_mode && !m_auto_live_active.load()) {
+                        // ★ 자동 전환 발동!
+                        m_auto_live_active.store(true);
+                        m_trading.shadow_mode = false;
+                        m_port_risk.set_shadow_mode(false);
+
+                        spdlog::warn("═══════════════════════════════════════════════════");
+                        spdlog::warn("  AUTO-LIVE ACTIVATED: {} READY + {} PROVEN symbols",
+                            ps.ready, ps.proven);
+                        spdlog::warn("  Shadow mode OFF — eligible symbols will get REAL orders");
+                        spdlog::warn("═══════════════════════════════════════════════════");
+
+                        // 레버리지 초기화 (처음 Live로 전환될 때)
+                        init_leverage();
+                    }
+
+                    // 라이브 전환 후에도 적격 심볼이 최소 기준 미달이면 다시 Shadow로 복귀
+                    if (m_auto_live_active.load() && !ps.can_go_live) {
+                        m_auto_live_active.store(false);
+                        m_trading.shadow_mode = true;
+                        m_port_risk.set_shadow_mode(true);
+
+                        spdlog::warn("═══════════════════════════════════════════════════");
+                        spdlog::warn("  AUTO-LIVE DEACTIVATED: eligible symbols dropped below {}",
+                            ps.min_symbols_for_live);
+                        spdlog::warn("  Shadow mode ON — back to paper trading");
+                        spdlog::warn("═══════════════════════════════════════════════════");
+                    }
+
+                    spdlog::info("[AUTO-LIVE] Pipeline: B={} L={} P={} R={} V={} | eligible={} | live={}",
+                        ps.blocked, ps.learning, ps.promising, ps.ready, ps.proven,
+                        m_eligible_keys.size(), !m_trading.shadow_mode);
+
+                } catch (const std::exception& e) {
+                    spdlog::warn("[AUTO-LIVE] Check failed: {}", e.what());
+                }
             }
 
             // Watchdog: check worker heartbeats
@@ -1046,7 +1126,19 @@ private:
 
         std::string side_str = sig.action == "buy" ? "long" : "short";
 
-        if (m_trading.shadow_mode) {
+        // ★ Shadow/Live 분기: 자동 전환 모드에서는 심볼+TF별로 판단
+        bool force_shadow = m_trading.shadow_mode;
+        if (!force_shadow && m_auto_live_active.load()) {
+            // 자동 Live 모드: 이 심볼+TF가 적격인지 체크
+            std::string eligible_key = sig.symbol + ":" + tf;
+            std::lock_guard elock(m_eligible_mtx);
+            if (m_eligible_keys.find(eligible_key) == m_eligible_keys.end()) {
+                force_shadow = true;  // 적격 아님 → Shadow로 처리
+                spdlog::info("[W-{}] AUTO-LIVE SHADOW {} ({}:not eligible)", wid, sig.symbol, eligible_key);
+            }
+        }
+
+        if (force_shadow) {
             spdlog::info("[W-{}] SHADOW {} {} sz={:.6f}", wid, sig.action, sig.symbol, sig.size);
             m_orders_executed.fetch_add(1);
             m_pos_mgr.register_position(sig.symbol, tf, side_str,
@@ -1712,6 +1804,11 @@ private:
     SpotShadowTracker m_spot_shadow; // 현물 시그널 가상 추적 (실전과 분리)
     LiveReadinessEngine m_readiness; // Shadow → Live 전환 준비도 평가
     TradingConfig m_trading;
+
+    // ★ 자동 Live 전환: READY/PROVEN 심볼+TF set (60초마다 갱신)
+    mutable std::mutex m_eligible_mtx;
+    std::unordered_set<std::string> m_eligible_keys;  // "VICUSDT:15" 형태
+    std::atomic<bool> m_auto_live_active{false};       // 자동 전환 발동 여부
 
     RateLimiter m_order_limiter;
     RateLimiter m_tpsl_limiter;

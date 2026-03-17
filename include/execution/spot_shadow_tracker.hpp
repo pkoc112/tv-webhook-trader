@@ -209,6 +209,54 @@ public:
     }
 
     // ================================================================
+    // 심볼+TF별 성적표 (자동 Live 전환 판단용)
+    // 현물은 exchange도 포함: key = "AKTKRW:15"
+    // ================================================================
+    [[nodiscard]] nlohmann::json get_symbol_tf_report() const {
+        std::lock_guard lock(m_mtx);
+        struct SymTfStats {
+            int total{0}, wins{0};
+            double total_pnl{0.0};
+        };
+        std::unordered_map<std::string, SymTfStats> by_sym_tf;
+
+        for (auto& t : m_trades) {
+            std::string tf = t.timeframe.empty() ? "0" : t.timeframe;
+            std::string key = t.symbol + ":" + tf;
+            auto& s = by_sym_tf[key];
+            s.total++;
+            if (t.pnl > 0) s.wins++;
+            s.total_pnl += t.pnl;
+        }
+
+        auto arr = nlohmann::json::array();
+        for (auto& [key, s] : by_sym_tf) {
+            auto colon = key.find(':');
+            std::string sym = key.substr(0, colon);
+            std::string tf  = key.substr(colon + 1);
+
+            double wr = s.total > 0
+                ? std::round(static_cast<double>(s.wins) / s.total * 10000.0) / 100.0
+                : 0.0;
+            std::string grade = compute_grade(s.total, s.wins, s.total_pnl, wr);
+
+            arr.push_back(nlohmann::json{
+                {"symbol", sym}, {"timeframe", tf}, {"key", key},
+                {"total", s.total}, {"wins", s.wins},
+                {"losses", s.total - s.wins}, {"win_rate", wr},
+                {"total_pnl", std::round(s.total_pnl * 10000.0) / 10000.0},
+                {"avg_pnl", s.total > 0 ? std::round(s.total_pnl / s.total * 10000.0) / 10000.0 : 0.0},
+                {"grade", grade}
+            });
+        }
+
+        std::sort(arr.begin(), arr.end(), [](const nlohmann::json& a, const nlohmann::json& b) {
+            return a["total_pnl"].get<double>() > b["total_pnl"].get<double>();
+        });
+        return arr;
+    }
+
+    // ================================================================
     // 단일 심볼 등급 조회 (grade filter에서 사용)
     // symbol = "BTC:5m:upbit" 형식
     // ================================================================

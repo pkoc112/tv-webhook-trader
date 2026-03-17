@@ -248,6 +248,69 @@ public:
     }
 
     // ================================================================
+    // 심볼+TF별 평가 (같은 심볼이라도 TF별로 다른 등급 가능)
+    // sym_tf_report: get_symbol_tf_report()의 결과 (symbol, timeframe, grade 포함)
+    // ================================================================
+    [[nodiscard]] std::vector<SymbolReadiness> evaluate_all_by_tf(
+        const nlohmann::json& futures_tf_report,
+        const nlohmann::json& spot_tf_report) const
+    {
+        std::vector<SymbolReadiness> results;
+        results.reserve(futures_tf_report.size() + spot_tf_report.size());
+
+        for (auto& entry : futures_tf_report) {
+            auto r = evaluate_symbol(entry, "futures");
+            // key를 symbol:tf 형식으로 교체 (대시보드 표시용)
+            std::string tf = entry.value("timeframe", "");
+            if (!tf.empty()) r.symbol = r.symbol + ":" + tf;
+            results.push_back(std::move(r));
+        }
+        for (auto& entry : spot_tf_report) {
+            auto r = evaluate_symbol(entry, "spot");
+            std::string tf = entry.value("timeframe", "");
+            if (!tf.empty()) r.symbol = r.symbol + ":" + tf;
+            results.push_back(std::move(r));
+        }
+
+        std::sort(results.begin(), results.end(), [](const SymbolReadiness& a, const SymbolReadiness& b) {
+            if (a.level != b.level)
+                return static_cast<int>(a.level) > static_cast<int>(b.level);
+            return a.total_pnl > b.total_pnl;
+        });
+        return results;
+    }
+
+    // ================================================================
+    // 자동 전환용: 적격 심볼+TF Set 빌드 + 파이프라인 상태 반환
+    // 주기적으로 호출 (60초마다). 결과를 캐시하여 주문 시 O(1) 조회.
+    //
+    // eligible_keys: "VICUSDT:15" 형태의 READY/PROVEN 키 집합 (output)
+    // Returns: PipelineStatus (can_go_live 포함)
+    // ================================================================
+    [[nodiscard]] PipelineStatus refresh_eligible(
+        const nlohmann::json& futures_tf_report,
+        const nlohmann::json& spot_tf_report,
+        std::unordered_set<std::string>& eligible_keys) const
+    {
+        eligible_keys.clear();
+        auto all = evaluate_all_by_tf(futures_tf_report, spot_tf_report);
+        auto ps = get_pipeline_status(all);
+
+        for (auto& r : all) {
+            if (r.level == ReadinessLevel::READY || r.level == ReadinessLevel::PROVEN) {
+                eligible_keys.insert(r.symbol);  // "VICUSDT:15" 형태
+            }
+        }
+
+        if (ps.can_go_live) {
+            spdlog::info("[READINESS] 🟢 LIVE READY: {} READY + {} PROVEN = {} (need {})",
+                ps.ready, ps.proven, ps.ready + ps.proven, ps.min_symbols_for_live);
+        }
+
+        return ps;
+    }
+
+    // ================================================================
     // Get everything as JSON for dashboard
     // ================================================================
     [[nodiscard]] nlohmann::json get_readiness_json(

@@ -86,6 +86,7 @@ hft::TradingConfig parse_trading_config(const json& config, const json& risk_con
         tc.order_rate_limit  = t.value("order_rate_limit", 9.0);
         tc.tpsl_rate_limit   = t.value("tpsl_rate_limit", 9.0);
         tc.shadow_mode       = t.value("shadow_mode", false);
+        tc.auto_live         = t.value("auto_live", true);
         tc.backup_sl_pct     = t.value("backup_sl_pct", 0.03);
 
         if (t.contains("symbols")) {
