@@ -451,6 +451,7 @@ let shadowStats = {};
 let shadowPositions = [];
 let shadowTrades = [];
 let shadowSymbols = [];
+let readinessData = {};
 
 function getAuth() {
     authToken = localStorage.getItem('dash_auth') || sessionStorage.getItem('dash_auth') || '';
@@ -479,7 +480,7 @@ function pnlClass(v) { return v > 0 ? 'pnl-pos' : v < 0 ? 'pnl-neg' : 'pnl-zero'
 
 async function refreshAll() {
     getAuth();
-    const [scores, risk, stats, positions, shStats, shPos, shTrades, shSyms] = await Promise.all([
+    const [scores, risk, stats, positions, shStats, shPos, shTrades, shSyms, readiness] = await Promise.all([
         fetchJson('/api/symbols/scores'),
         fetchJson('/api/risk/status'),
         fetchJson('/api/stats'),
@@ -487,7 +488,8 @@ async function refreshAll() {
         fetchJson('/api/shadow/stats'),
         fetchJson('/api/shadow/positions'),
         fetchJson('/api/shadow/trades'),
-        fetchJson('/api/shadow/symbols')
+        fetchJson('/api/shadow/symbols'),
+        fetchJson('/api/readiness')
     ]);
 
     symbolScores = Array.isArray(scores) ? scores : (scores?.scores || []);
@@ -498,6 +500,7 @@ async function refreshAll() {
     shadowPositions = Array.isArray(shPos) ? shPos : [];
     shadowTrades = Array.isArray(shTrades) ? shTrades : [];
     shadowSymbols = Array.isArray(shSyms) ? shSyms : [];
+    readinessData = readiness || {};
 
     updateSummary();
     updateProgress();
@@ -506,6 +509,7 @@ async function refreshAll() {
     renderSymbolTable();
     renderPositions();
     renderShadowTracker();
+    renderPipeline();
 
     document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('ko-KR');
 }
@@ -938,6 +942,66 @@ async function doImport() {
         resultEl.textContent = '네트워크 오류: ' + e.message;
         resultEl.style.color = 'var(--red)';
     }
+}
+
+function renderPipeline() {
+    // Find or create pipeline section
+    let section = document.getElementById('pipelineSection');
+    if (!section) {
+        section = document.createElement('div');
+        section.id = 'pipelineSection';
+        section.className = 'section';
+        section.style.marginBottom = '20px';
+        // Insert before shadow tracker section
+        const container = document.querySelector('.container');
+        if (container) container.insertBefore(section, container.firstChild?.nextSibling);
+    }
+
+    const p = readinessData.pipeline || {};
+    const summary = readinessData.summary || {};
+    const total = (p.ready || 0) + (p.proven || 0);
+    const needed = p.min_symbols_for_live || 5;
+    const canLive = p.can_go_live || false;
+
+    const statusHtml = canLive
+        ? `<span style="color:var(--green);font-weight:700">LIVE TRADING READY</span> — ${total}/${needed} symbols qualified`
+        : `<span style="color:var(--yellow)">SHADOW MODE</span> — ${total}/${needed} symbols qualified (${needed - total} more needed)`;
+
+    let topHtml = '';
+    if (summary.top_ready && summary.top_ready.length > 0) {
+        topHtml = summary.top_ready.map(t => {
+            const mc = t.market === 'futures' ? 'var(--orange)' : 'var(--purple)';
+            return `<span style="color:${mc};margin:0 6px">${t.symbol} (${t.grade})</span>`;
+        }).join('');
+        topHtml = `<div style="margin-top:8px;font-size:11px;color:var(--text-muted)">Top Ready: ${topHtml}</div>`;
+    }
+
+    section.innerHTML = `
+        <div class="section-title">Shadow → Live 파이프라인</div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:12px">
+            <div style="background:var(--bg-card-hover);border-left:3px solid var(--red);padding:12px;border-radius:8px">
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase">BLOCKED</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:22px;font-weight:700;color:var(--red)">${p.blocked || 0}</div>
+            </div>
+            <div style="background:var(--bg-card-hover);border-left:3px solid var(--text-muted);padding:12px;border-radius:8px">
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase">LEARNING</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:22px;font-weight:700;color:var(--text-muted)">${p.learning || 0}</div>
+            </div>
+            <div style="background:var(--bg-card-hover);border-left:3px solid var(--yellow);padding:12px;border-radius:8px">
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase">PROMISING</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:22px;font-weight:700;color:var(--yellow)">${p.promising || 0}</div>
+            </div>
+            <div style="background:var(--bg-card-hover);border-left:3px solid var(--blue);padding:12px;border-radius:8px">
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase">READY</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:22px;font-weight:700;color:var(--blue)">${p.ready || 0}</div>
+            </div>
+            <div style="background:var(--bg-card-hover);border-left:3px solid var(--green);padding:12px;border-radius:8px">
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase">PROVEN</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:22px;font-weight:700;color:var(--green)">${p.proven || 0}</div>
+            </div>
+        </div>
+        <div style="text-align:center;font-family:'JetBrains Mono',monospace;font-size:12px">${statusHtml}</div>
+        ${topHtml}`;
 }
 
 // Init

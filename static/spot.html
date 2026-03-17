@@ -214,6 +214,82 @@ tr:hover td { background: var(--bg-card-hover); }
     <div id="spotSymbolEmpty" class="empty-state" style="display:none">데이터 수집 중...</div>
 </div>
 
+<!-- Live Readiness Pipeline -->
+<div class="section" id="pipelineSection">
+    <div class="section-title">Shadow → Live 파이프라인</div>
+    <div class="grid" id="pipelineGrid" style="grid-template-columns: repeat(5, 1fr);">
+        <div class="stat-card" style="border-left: 3px solid var(--red)">
+            <div class="stat-label">BLOCKED</div>
+            <div class="stat-value" id="pBlocked" style="color:var(--red)">0</div>
+        </div>
+        <div class="stat-card" style="border-left: 3px solid var(--text-muted)">
+            <div class="stat-label">LEARNING</div>
+            <div class="stat-value" id="pLearning" style="color:var(--text-muted)">0</div>
+        </div>
+        <div class="stat-card" style="border-left: 3px solid var(--yellow)">
+            <div class="stat-label">PROMISING</div>
+            <div class="stat-value" id="pPromising" style="color:var(--yellow)">0</div>
+        </div>
+        <div class="stat-card" style="border-left: 3px solid var(--blue)">
+            <div class="stat-label">READY</div>
+            <div class="stat-value" id="pReady" style="color:var(--blue)">0</div>
+        </div>
+        <div class="stat-card" style="border-left: 3px solid var(--green)">
+            <div class="stat-label">PROVEN</div>
+            <div class="stat-value" id="pProven" style="color:var(--green)">0</div>
+        </div>
+    </div>
+    <div id="pipelineStatus" style="margin-top:12px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-secondary);text-align:center;"></div>
+</div>
+
+<!-- Spot Shadow Symbol Grades -->
+<div class="section">
+    <div class="section-title">현물 Shadow 심볼 등급</div>
+    <table>
+        <thead>
+            <tr>
+                <th>심볼</th>
+                <th>등급</th>
+                <th>거래수</th>
+                <th>승/패</th>
+                <th>승률</th>
+                <th>총 PnL</th>
+                <th>평균 PnL</th>
+                <th>실전 준비</th>
+            </tr>
+        </thead>
+        <tbody id="spotShadowSymbols"></tbody>
+    </table>
+    <div id="spotShadowEmpty" class="empty-state" style="display:none">현물 Shadow 데이터 수집 중...</div>
+</div>
+
+<!-- Spot Shadow Stats -->
+<div class="section">
+    <div class="section-title">현물 Shadow 통계</div>
+    <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));">
+        <div class="stat-card">
+            <div class="stat-label">Shadow 진입</div>
+            <div class="stat-value" id="ssTotalEntries">0</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Shadow 청산</div>
+            <div class="stat-value" id="ssTotalCloses">0</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Shadow 포지션</div>
+            <div class="stat-value" id="ssOpenPos">0</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Shadow 승률</div>
+            <div class="stat-value" id="ssWinRate">-</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Shadow PnL</div>
+            <div class="stat-value" id="ssPnl">0</div>
+        </div>
+    </div>
+</div>
+
 </div>
 </div>
 
@@ -248,17 +324,22 @@ async function apiFetch(url) {
 
 async function refreshAll() {
     try {
-        // Spot 전용 API 사용 (선물 데이터와 완전 분리)
-        const [spotStats, spotPositions, spotTrades] = await Promise.all([
+        const [spotStats, spotPositions, spotTrades, spotShadowStats, spotShadowSymbols, readiness] = await Promise.all([
             apiFetch('/api/spot/stats'),
             apiFetch('/api/spot/positions'),
-            apiFetch('/api/spot/trades')
+            apiFetch('/api/spot/trades'),
+            apiFetch('/api/spot-shadow/stats'),
+            apiFetch('/api/spot-shadow/symbols'),
+            apiFetch('/api/readiness')
         ]);
 
         renderSpotPositions(spotPositions);
         renderSpotTrades(spotTrades);
         renderSymbolStats(spotTrades);
         updateSpotStats(spotStats);
+        updateSpotShadowStats(spotShadowStats);
+        renderSpotShadowSymbols(spotShadowSymbols, readiness);
+        updatePipeline(readiness);
 
         document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('ko-KR');
     } catch (e) {
@@ -372,6 +453,79 @@ function updateSpotStats(stats) {
     const wr = stats.win_rate || 0;
     document.getElementById('spotWinRate').textContent = wr > 0 ? wr.toFixed(1) + '%' : '-';
     document.getElementById('spotSymbols').textContent = stats.unique_symbols || 0;
+}
+
+function updateSpotShadowStats(stats) {
+    document.getElementById('ssTotalEntries').textContent = stats.total_entries || 0;
+    document.getElementById('ssTotalCloses').textContent = stats.total_closes || 0;
+    document.getElementById('ssOpenPos').textContent = stats.open_positions || 0;
+    const wr = stats.win_rate || 0;
+    document.getElementById('ssWinRate').textContent = wr > 0 ? wr.toFixed(1) + '%' : '-';
+    const pnl = stats.total_pnl || 0;
+    const pnlEl = document.getElementById('ssPnl');
+    pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(4);
+    pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'pnl-pos' : 'pnl-neg');
+}
+
+function renderSpotShadowSymbols(symbols, readiness) {
+    const tbody = document.getElementById('spotShadowSymbols');
+    const empty = document.getElementById('spotShadowEmpty');
+    if (!symbols || !symbols.length) { tbody.innerHTML = ''; empty.style.display = 'block'; return; }
+    empty.style.display = 'none';
+
+    // Build readiness lookup from spot entries
+    const readinessMap = {};
+    if (readiness && readiness.spot) {
+        readiness.spot.forEach(r => { readinessMap[r.symbol] = r; });
+    }
+
+    const gradeColors = {'A+':'var(--green)','A':'var(--green)','B':'var(--blue)','C':'var(--yellow)','D':'var(--orange)','F':'var(--red)','?':'var(--text-muted)'};
+    const levelColors = {'PROVEN':'var(--green)','READY':'var(--blue)','PROMISING':'var(--yellow)','LEARNING':'var(--text-muted)','BLOCKED':'var(--red)'};
+
+    tbody.innerHTML = symbols.map(s => {
+        const gc = gradeColors[s.grade] || 'var(--text-muted)';
+        const pnlClass = s.total_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+        const r = readinessMap[s.symbol];
+        const level = r ? r.level : 'LEARNING';
+        const lc = levelColors[level] || 'var(--text-muted)';
+        return `<tr>
+            <td style="color:var(--text-primary);font-weight:600">${s.symbol}</td>
+            <td style="color:${gc};font-weight:700;font-size:14px">${s.grade}</td>
+            <td>${s.total}</td>
+            <td>${s.wins}/${s.losses}</td>
+            <td>${s.win_rate}%</td>
+            <td class="${pnlClass}">${s.total_pnl >= 0 ? '+' : ''}${s.total_pnl.toFixed(4)}</td>
+            <td class="${pnlClass}">${s.avg_pnl >= 0 ? '+' : ''}${s.avg_pnl.toFixed(4)}</td>
+            <td style="color:${lc};font-weight:600;font-size:11px">${level}</td>
+        </tr>`;
+    }).join('');
+}
+
+function updatePipeline(readiness) {
+    if (!readiness || !readiness.pipeline) return;
+    const p = readiness.pipeline;
+    document.getElementById('pBlocked').textContent = p.blocked || 0;
+    document.getElementById('pLearning').textContent = p.learning || 0;
+    document.getElementById('pPromising').textContent = p.promising || 0;
+    document.getElementById('pReady').textContent = p.ready || 0;
+    document.getElementById('pProven').textContent = p.proven || 0;
+
+    const statusEl = document.getElementById('pipelineStatus');
+    const total = (p.ready || 0) + (p.proven || 0);
+    const needed = p.min_symbols_for_live || 5;
+    if (p.can_go_live) {
+        statusEl.innerHTML = `<span style="color:var(--green);font-weight:700">LIVE TRADING READY</span> - ${total}/${needed} symbols qualified`;
+    } else {
+        statusEl.innerHTML = `<span style="color:var(--yellow)">SHADOW MODE</span> - ${total}/${needed} symbols qualified (${needed - total} more needed)`;
+    }
+
+    // Show top ready symbols
+    if (readiness.summary && readiness.summary.top_ready && readiness.summary.top_ready.length > 0) {
+        const topStr = readiness.summary.top_ready.map(t =>
+            `<span style="color:${t.market==='futures'?'var(--orange)':'var(--purple)'};margin:0 4px">${t.symbol} (${t.grade})</span>`
+        ).join('');
+        statusEl.innerHTML += `<br><span style="color:var(--text-muted);font-size:11px">Top: ${topStr}</span>`;
+    }
 }
 
 // Initial auth check

@@ -66,6 +66,15 @@ struct DashboardCallbacks {
     std::function<nlohmann::json()> get_spot_stats;
     std::function<nlohmann::json()> get_spot_positions;
     std::function<nlohmann::json()> get_spot_trades;
+
+    // ── Spot Shadow Tracker 콜백 (현물 가상 추적) ──
+    std::function<nlohmann::json()> get_spot_shadow_stats;
+    std::function<nlohmann::json()> get_spot_shadow_positions;
+    std::function<nlohmann::json()> get_spot_shadow_trades;
+    std::function<nlohmann::json()> get_spot_shadow_symbol_report;
+
+    // ── Live Readiness 콜백 (파이프라인 상태) ──
+    std::function<nlohmann::json()> get_readiness;
 };
 
 // Simple per-IP rate limiter: max requests per window
@@ -356,6 +365,43 @@ private:
                         m_cb.get_shadow_symbol_report().dump());
                 }
                 return make_response(http::status::ok, "[]");
+            }
+            // ── Spot Shadow Tracker API (현물 가상 추적) ──
+            if (target == "/api/spot-shadow/stats") {
+                if (m_cb.get_spot_shadow_stats) {
+                    return make_response(http::status::ok,
+                        m_cb.get_spot_shadow_stats().dump());
+                }
+                return make_response(http::status::ok, "{}");
+            }
+            if (target == "/api/spot-shadow/positions") {
+                if (m_cb.get_spot_shadow_positions) {
+                    return make_response(http::status::ok,
+                        m_cb.get_spot_shadow_positions().dump());
+                }
+                return make_response(http::status::ok, "[]");
+            }
+            if (target == "/api/spot-shadow/trades") {
+                if (m_cb.get_spot_shadow_trades) {
+                    return make_response(http::status::ok,
+                        m_cb.get_spot_shadow_trades().dump());
+                }
+                return make_response(http::status::ok, "[]");
+            }
+            if (target == "/api/spot-shadow/symbols") {
+                if (m_cb.get_spot_shadow_symbol_report) {
+                    return make_response(http::status::ok,
+                        m_cb.get_spot_shadow_symbol_report().dump());
+                }
+                return make_response(http::status::ok, "[]");
+            }
+            // ── Live Readiness API (파이프라인 상태) ──
+            if (target == "/api/readiness") {
+                if (m_cb.get_readiness) {
+                    return make_response(http::status::ok,
+                        m_cb.get_readiness().dump());
+                }
+                return make_response(http::status::ok, "{}");
             }
             // ── Spot 전용 API (선물과 완전 분리) ──
             if (target == "/api/spot/stats") {

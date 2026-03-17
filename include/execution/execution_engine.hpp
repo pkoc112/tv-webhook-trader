@@ -53,6 +53,8 @@
 #include "execution/position_manager.hpp"
 #include "execution/trade_recorder.hpp"
 #include "execution/shadow_tracker.hpp"
+#include "execution/spot_shadow_tracker.hpp"
+#include "execution/live_readiness.hpp"
 
 namespace hft {
 
@@ -92,6 +94,7 @@ struct EngineConfig {
     AlertManager& alerts;
     SymbolLearner& learner;
     TradingConfig trading_config;
+    nlohmann::json risk_config;    // LiveReadiness 등 설정용
 };
 
 // ============================================================================
@@ -124,6 +127,8 @@ public:
         , m_alerts(cfg.alerts)
         , m_learner(cfg.learner)
         , m_shadow(cfg.learner)
+        , m_spot_shadow(cfg.learner)
+        , m_readiness(cfg.risk_config)
         , m_trading(cfg.trading_config)
         , m_order_limiter(m_trading.order_rate_limit)
         , m_tpsl_limiter(m_trading.tpsl_rate_limit)
@@ -371,6 +376,27 @@ public:
     // ── Strategy performance stats for identifying bad signals ──
     [[nodiscard]] nlohmann::json get_strategy_stats() const {
         return m_trade_rec.get_strategy_stats();
+    }
+
+    // ── Spot Shadow Tracker 접근자 (현물 가상 추적 데이터) ──
+    [[nodiscard]] nlohmann::json get_spot_shadow_stats() const {
+        return m_spot_shadow.get_stats_json();
+    }
+    [[nodiscard]] nlohmann::json get_spot_shadow_positions() const {
+        return m_spot_shadow.get_positions_json();
+    }
+    [[nodiscard]] nlohmann::json get_spot_shadow_trades() const {
+        return m_spot_shadow.get_trades_json(200);
+    }
+    [[nodiscard]] nlohmann::json get_spot_shadow_symbol_report() const {
+        return m_spot_shadow.get_symbol_report();
+    }
+
+    // ── Live Readiness 접근자 (파이프라인 상태) ──
+    [[nodiscard]] nlohmann::json get_readiness_json() const {
+        auto futures_report = m_shadow.get_symbol_report();
+        auto spot_report = m_spot_shadow.get_symbol_report();
+        return m_readiness.get_readiness_json(futures_report, spot_report);
     }
 
     // ── 전체 선물 포지션 긴급 청산 ──
@@ -646,6 +672,7 @@ private:
 
                 // Shadow tracker 상태 저장
                 m_shadow.save_state();
+                m_spot_shadow.save_state();
             } catch (const std::exception& e) {
                 spdlog::warn("[Periodic] Sync failed: {}", e.what());
             }
@@ -686,7 +713,8 @@ private:
 
         // ★ Shadow Tracker: 모든 시그널을 무조건 가상 추적 (필터 이전!)
         // 실전 리스크와 무관하게 모든 Entry/TP/SL을 체점하여 심볼 품질 학습
-        m_shadow.track(sig);
+        m_shadow.track(sig);         // 선물 시그널 가상 추적
+        m_spot_shadow.track(sig);    // 현물 시그널 가상 추적 (각자 자동 필터링)
 
         // Stale signal detection - skip signals that are too old
         {
@@ -1331,6 +1359,26 @@ private:
         SymbolLockGuard guard(m_sym_locks, sig.symbol);
 
         std::string tf = sig.timeframe.empty() ? "unknown" : sig.timeframe;
+
+        // ★ SpotShadow 등급 필터 — 현물도 등급 기반으로 진입 제어
+        {
+            std::string grade_key = sig.symbol + ":" + tf + ":" + sig.exchange;
+            std::string spot_grade = m_spot_shadow.get_grade(grade_key);
+
+            if (spot_grade == "?") {
+                spdlog::debug("[W-{}] SPOT_GRADE {}: ? (need more data)", wid, sig.symbol);
+            } else if (spot_grade == "F" || spot_grade == "D") {
+                spdlog::info("[W-{}] SPOT_SKIP {}: grade={} (poor quality)", wid, sig.symbol, spot_grade);
+                m_risk_skips.fetch_add(1);
+                return;
+            } else if (spot_grade == "C") {
+                // 현물 C 등급은 아직 허용 (데이터 축적 필요)
+                spdlog::debug("[W-{}] SPOT_GRADE {}: C (marginal, allowed for now)", wid, sig.symbol);
+            } else {
+                spdlog::info("[W-{}] SPOT_OK {}: grade={}", wid, sig.symbol, spot_grade);
+            }
+        }
+
         std::string tier = "C";  // 현물 학습 초기: 모든 심볼 C 티어
 
         // KRW 사이즈 계산 (레버리지 없음)
@@ -1630,7 +1678,9 @@ private:
     StatePersistence& m_state;
     AlertManager& m_alerts;
     SymbolLearner& m_learner;
-    ShadowTracker m_shadow;   // 모든 시그널 가상 추적 (실전과 분리)
+    ShadowTracker m_shadow;          // 선물 시그널 가상 추적 (실전과 분리)
+    SpotShadowTracker m_spot_shadow; // 현물 시그널 가상 추적 (실전과 분리)
+    LiveReadinessEngine m_readiness; // Shadow → Live 전환 준비도 평가
     TradingConfig m_trading;
 
     RateLimiter m_order_limiter;

@@ -248,7 +248,8 @@ int main(int argc, char* argv[]) {
             .state_store     = state_store,
             .alerts          = alert_mgr,
             .learner         = symbol_learner,
-            .trading_config  = trading_config
+            .trading_config  = trading_config,
+            .risk_config     = risk_config
         };
         hft::ExecutionEngine exec_engine(engine_cfg);
         exec_engine.start();
@@ -383,7 +384,14 @@ int main(int argc, char* argv[]) {
                     });
                 }
                 return arr;
-            }
+            },
+            // ── Spot Shadow Tracker 콜백 (현물 가상 추적) ──
+            .get_spot_shadow_stats = [&exec_engine]() { return exec_engine.get_spot_shadow_stats(); },
+            .get_spot_shadow_positions = [&exec_engine]() { return exec_engine.get_spot_shadow_positions(); },
+            .get_spot_shadow_trades = [&exec_engine]() { return exec_engine.get_spot_shadow_trades(); },
+            .get_spot_shadow_symbol_report = [&exec_engine]() { return exec_engine.get_spot_shadow_symbol_report(); },
+            // ── Live Readiness 콜백 (파이프라인 상태) ──
+            .get_readiness = [&exec_engine]() { return exec_engine.get_readiness_json(); }
         };
 
         std::string static_dir = config.value("static_dir", "static");
