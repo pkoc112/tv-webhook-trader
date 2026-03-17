@@ -139,6 +139,7 @@ int main(int argc, char* argv[]) {
         // 로거 초기화
         std::filesystem::create_directories("logs");
         std::filesystem::create_directories("data");
+        std::filesystem::create_directories("data/spot");  // Spot 전용 상태 파일 디렉토리
         init_logger(config.value("log_level", "info"));
 
         spdlog::info("================================================");
@@ -301,6 +302,8 @@ int main(int argc, char* argv[]) {
                 auto positions = exec_engine.positions_snapshot();
                 auto arr = nlohmann::json::array();
                 for (auto& [key, p] : positions) {
+                    // Futures 전용 — spot 포지션은 /api/spot/positions에서 제공
+                    if (p.market_type == "spot") continue;
                     arr.push_back(nlohmann::json{
                         {"key", key}, {"symbol", p.symbol}, {"timeframe", p.timeframe},
                         {"side", p.side}, {"entry_price", p.entry_price},
@@ -342,6 +345,37 @@ int main(int argc, char* argv[]) {
                 }
                 int count = exec_engine.import_trades(records);
                 return {{"imported", count}, {"total_submitted", static_cast<int>(records.size())}, {"status", "ok"}};
+            },
+            // ── Spot 전용 콜백 (선물과 완전 분리) ──
+            .get_spot_stats = [&exec_engine]() { return exec_engine.get_spot_stats(); },
+            .get_spot_positions = [&exec_engine]() {
+                auto positions = exec_engine.spot_positions_snapshot();
+                auto arr = nlohmann::json::array();
+                for (auto& [key, p] : positions) {
+                    arr.push_back(nlohmann::json{
+                        {"key", key}, {"symbol", p.symbol}, {"timeframe", p.timeframe},
+                        {"side", p.side}, {"entry_price", p.entry_price},
+                        {"quantity", p.quantity}, {"leverage", p.leverage},
+                        {"tier", p.tier}, {"strategy", p.strategy},
+                        {"exchange", p.exchange}, {"market_type", p.market_type}
+                    });
+                }
+                return arr;
+            },
+            .get_spot_trades = [&exec_engine]() {
+                auto trades = exec_engine.spot_trades_snapshot();
+                auto arr = nlohmann::json::array();
+                for (auto& t : trades) {
+                    arr.push_back(nlohmann::json{
+                        {"symbol", t.symbol}, {"timeframe", t.timeframe},
+                        {"exit_reason", t.exit_reason},
+                        {"entry_price", t.entry_price}, {"exit_price", t.exit_price},
+                        {"quantity", t.quantity}, {"pnl", t.pnl}, {"fee", t.fee},
+                        {"strategy", t.strategy}, {"exchange", t.exchange},
+                        {"market_type", t.market_type}
+                    });
+                }
+                return arr;
             }
         };
 

@@ -248,23 +248,17 @@ async function apiFetch(url) {
 
 async function refreshAll() {
     try {
-        const [positions, stats] = await Promise.all([
-            apiFetch('/api/positions'),
-            apiFetch('/api/stats')
+        // Spot 전용 API 사용 (선물 데이터와 완전 분리)
+        const [spotStats, spotPositions, spotTrades] = await Promise.all([
+            apiFetch('/api/spot/stats'),
+            apiFetch('/api/spot/positions'),
+            apiFetch('/api/spot/trades')
         ]);
 
-        // Filter spot positions
-        const spotPos = positions.filter(p => p.market_type === 'spot');
-        renderSpotPositions(spotPos);
-
-        // Get trades for spot stats
-        try {
-            const risk = await apiFetch('/api/risk/status');
-            // Stats will be computed from positions and trades data
-        } catch (e) {}
-
-        // Compute spot-specific stats from all available data
-        updateSpotStats(spotPos);
+        renderSpotPositions(spotPositions);
+        renderSpotTrades(spotTrades);
+        renderSymbolStats(spotTrades);
+        updateSpotStats(spotStats);
 
         document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('ko-KR');
     } catch (e) {
@@ -296,19 +290,88 @@ function renderSpotPositions(positions) {
             <td>${p.strategy || '-'}</td>
         </tr>`;
     }).join('');
-
-    document.getElementById('spotPositions').textContent = positions.length;
 }
 
-function updateSpotStats(spotPos) {
-    document.getElementById('spotPositions').textContent = spotPos.length;
+function renderSpotTrades(trades) {
+    const tbody = document.getElementById('spotTradesTable');
+    const empty = document.getElementById('spotTradesEmpty');
 
-    // Unique symbols
-    const uniqueSymbols = new Set(spotPos.map(p => p.symbol));
-    document.getElementById('spotSymbols').textContent = uniqueSymbols.size;
+    if (!trades.length) {
+        tbody.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+    }
+    empty.style.display = 'none';
 
-    // Trade stats will be populated when we have trade data
-    // For now, show position-based data
+    // 최근 거래가 위로
+    const sorted = [...trades].reverse();
+    tbody.innerHTML = sorted.map(t => {
+        const pnlClass = t.pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+        const pnlSign = t.pnl >= 0 ? '+' : '';
+        return `<tr>
+            <td style="color:var(--text-primary);font-weight:600">${t.symbol}</td>
+            <td>${t.timeframe || '-'}</td>
+            <td>${Number(t.entry_price).toLocaleString('ko-KR')}</td>
+            <td>${Number(t.exit_price).toLocaleString('ko-KR')}</td>
+            <td>${Number(t.quantity).toFixed(8)}</td>
+            <td class="${pnlClass}">${pnlSign}${Number(t.pnl).toLocaleString('ko-KR', {maximumFractionDigits:2})}</td>
+            <td>${t.exit_reason || '-'}</td>
+            <td>${t.strategy || '-'}</td>
+        </tr>`;
+    }).join('');
+}
+
+function renderSymbolStats(trades) {
+    const tbody = document.getElementById('spotSymbolStats');
+    const empty = document.getElementById('spotSymbolEmpty');
+
+    if (!trades.length) {
+        tbody.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+    }
+    empty.style.display = 'none';
+
+    // 심볼별 집계
+    const bySymbol = {};
+    trades.forEach(t => {
+        if (!bySymbol[t.symbol]) bySymbol[t.symbol] = { trades: 0, wins: 0, losses: 0, totalPnl: 0 };
+        const s = bySymbol[t.symbol];
+        s.trades++;
+        if (t.pnl > 0) s.wins++; else s.losses++;
+        s.totalPnl += t.pnl;
+    });
+
+    const entries = Object.entries(bySymbol).sort((a, b) => b[1].totalPnl - a[1].totalPnl);
+
+    tbody.innerHTML = entries.map(([symbol, s]) => {
+        const wr = s.trades > 0 ? (s.wins / s.trades * 100).toFixed(1) : '0.0';
+        const avgPnl = s.trades > 0 ? s.totalPnl / s.trades : 0;
+        const pnlClass = s.totalPnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+        const avgClass = avgPnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+        return `<tr>
+            <td style="color:var(--text-primary);font-weight:600">${symbol}</td>
+            <td>${s.trades}</td>
+            <td>${s.wins}/${s.losses}</td>
+            <td>${wr}%</td>
+            <td class="${pnlClass}">${s.totalPnl >= 0 ? '+' : ''}${Number(s.totalPnl).toLocaleString('ko-KR', {maximumFractionDigits:2})}</td>
+            <td class="${avgClass}">${avgPnl >= 0 ? '+' : ''}${Number(avgPnl).toLocaleString('ko-KR', {maximumFractionDigits:2})}</td>
+        </tr>`;
+    }).join('');
+}
+
+function updateSpotStats(stats) {
+    document.getElementById('spotPositions').textContent = stats.open_positions || 0;
+    document.getElementById('spotTrades').textContent = stats.total_trades || 0;
+
+    const pnl = stats.total_pnl_krw || 0;
+    const pnlEl = document.getElementById('spotPnl');
+    pnlEl.textContent = (pnl >= 0 ? '+' : '') + Number(pnl).toLocaleString('ko-KR', {maximumFractionDigits:0});
+    pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'pnl-pos' : 'pnl-neg');
+
+    const wr = stats.win_rate || 0;
+    document.getElementById('spotWinRate').textContent = wr > 0 ? wr.toFixed(1) + '%' : '-';
+    document.getElementById('spotSymbols').textContent = stats.unique_symbols || 0;
 }
 
 // Initial auth check

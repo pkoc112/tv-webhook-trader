@@ -52,6 +52,11 @@ struct DashboardCallbacks {
     std::function<nlohmann::json()> get_tf_stats;
     std::function<nlohmann::json()> get_strategy_stats;
     std::function<nlohmann::json(const nlohmann::json&)> import_trades;
+
+    // ── Spot 전용 콜백 (선물과 완전 분리) ──
+    std::function<nlohmann::json()> get_spot_stats;
+    std::function<nlohmann::json()> get_spot_positions;
+    std::function<nlohmann::json()> get_spot_trades;
 };
 
 // Simple per-IP rate limiter: max requests per window
@@ -302,6 +307,28 @@ private:
                 if (m_cb.get_strategy_stats) {
                     return make_response(http::status::ok,
                         m_cb.get_strategy_stats().dump());
+                }
+                return make_response(http::status::ok, "[]");
+            }
+            // ── Spot 전용 API (선물과 완전 분리) ──
+            if (target == "/api/spot/stats") {
+                if (m_cb.get_spot_stats) {
+                    return make_response(http::status::ok,
+                        m_cb.get_spot_stats().dump());
+                }
+                return make_response(http::status::ok, "{}");
+            }
+            if (target == "/api/spot/positions") {
+                if (m_cb.get_spot_positions) {
+                    return make_response(http::status::ok,
+                        m_cb.get_spot_positions().dump());
+                }
+                return make_response(http::status::ok, "[]");
+            }
+            if (target == "/api/spot/trades") {
+                if (m_cb.get_spot_trades) {
+                    return make_response(http::status::ok,
+                        m_cb.get_spot_trades().dump());
                 }
                 return make_response(http::status::ok, "[]");
             }
