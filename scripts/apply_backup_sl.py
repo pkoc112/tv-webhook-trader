@@ -66,6 +66,48 @@ def api_request(method, path, body=None, keys=None):
         print(f"  HTTP {e.code}: {err_body}")
         return {"code": str(e.code), "msg": err_body}
 
+# ─── Contract Info ───
+def fetch_contracts(keys):
+    """심볼별 계약 정보 조회 (pricePlace, sizeMultiplier 등)"""
+    path = f"/api/v2/mix/market/contracts?productType={PRODUCT_TYPE}"
+    resp = api_request("GET", path, keys=keys)
+    if resp.get("code") != "00000":
+        print(f"Error fetching contracts: {resp}")
+        return {}
+    contracts = {}
+    for c in resp.get("data", []):
+        sym = c.get("symbol", "")
+        if sym:
+            contracts[sym] = {
+                "pricePlace": int(c.get("pricePlace", "4")),
+                "priceEndStep": float(c.get("priceEndStep", "1")),
+                "sizeMultiplier": float(c.get("sizeMultiplier", "0.001")),
+                "minTradeNum": float(c.get("minTradeNum", "0.001")),
+            }
+    return contracts
+
+def round_price_down(price, price_place, price_end_step=1):
+    """거래소 가격 정밀도에 맞게 내림 (long SL용)"""
+    import math
+    factor = 10 ** price_place
+    rounded = math.floor(price * factor) / factor
+    if price_end_step > 1:
+        last_digit = int(round(rounded * factor)) % int(price_end_step)
+        if last_digit != 0:
+            rounded = math.floor(rounded * factor / price_end_step) * price_end_step / factor
+    return rounded
+
+def round_price_up(price, price_place, price_end_step=1):
+    """거래소 가격 정밀도에 맞게 올림 (short SL용)"""
+    import math
+    factor = 10 ** price_place
+    rounded = math.ceil(price * factor) / factor
+    if price_end_step > 1:
+        last_digit = int(round(rounded * factor)) % int(price_end_step)
+        if last_digit != 0:
+            rounded = math.ceil(rounded * factor / price_end_step) * price_end_step / factor
+    return rounded
+
 # ─── Main Logic ───
 def get_all_positions(keys):
     """거래소에서 열린 포지션 전부 조회"""
@@ -89,10 +131,18 @@ def get_pending_tpsl(keys, symbol=None):
         return data.get("entrustedList", [])
     return data if isinstance(data, list) else []
 
-def place_tpsl_order(keys, symbol, trigger_price, hold_side, size, dry_run=True):
+def place_tpsl_order(keys, symbol, trigger_price, hold_side, size, contracts, dry_run=True):
     """SL 트리거 주문 설정"""
-    # 가격 소수점 처리 (최대 8자리)
-    trigger_str = f"{trigger_price:.8f}".rstrip('0').rstrip('.')
+    # 심볼별 가격 정밀도 적용
+    ci = contracts.get(symbol, {})
+    pp = ci.get("pricePlace", 4)
+    pes = ci.get("priceEndStep", 1)
+    # long SL은 내림, short SL은 올림 (보수적)
+    if hold_side == "long":
+        trigger_price = round_price_down(trigger_price, pp, pes)
+    else:
+        trigger_price = round_price_up(trigger_price, pp, pes)
+    trigger_str = f"{trigger_price:.{pp}f}"
 
     body = {
         "symbol": symbol,
@@ -136,6 +186,11 @@ def main():
 
     keys = load_keys()
     print(f"\nAPI Key: {keys['api_key'][:12]}...")
+
+    # 0. 계약 정보 로드 (가격 정밀도)
+    print("\n[0] Fetching contract info (pricePlace)...")
+    contracts = fetch_contracts(keys)
+    print(f"  Loaded {len(contracts)} contracts")
 
     # 1. 열린 포지션 조회
     print("\n[1] Fetching open positions...")
@@ -200,7 +255,7 @@ def main():
         if not dry_run:
             time.sleep(0.25)
 
-        ok = place_tpsl_order(keys, symbol, sl_price, hold_side, size, dry_run=dry_run)
+        ok = place_tpsl_order(keys, symbol, sl_price, hold_side, size, contracts, dry_run=dry_run)
         if ok:
             applied += 1
         else:
