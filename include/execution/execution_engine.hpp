@@ -179,6 +179,20 @@ public:
                 m_spot_trades = std::move(spot_loaded.trades);
                 spdlog::info("[Exec] Spot state restored: balance={:.0f}KRW positions={} trades={}",
                     m_spot_balance, m_spot_positions.size(), m_spot_trades.size());
+
+                // ★ 비정상 포지션 정리 (BTC/USDT 페어 제거)
+                {
+                    size_t before = m_spot_positions.size();
+                    std::erase_if(m_spot_positions, [](const auto& pair) {
+                        const auto& sym = pair.second.symbol;
+                        std::string quote = spot_quote_currency(sym);
+                        return quote != "KRW";
+                    });
+                    size_t removed = before - m_spot_positions.size();
+                    if (removed > 0) {
+                        spdlog::warn("[Exec] Removed {} non-KRW spot positions (BTC/USDT pairs)", removed);
+                    }
+                }
             } else {
                 spdlog::info("[Exec] No spot state found, starting fresh (1,000,000 KRW)");
             }
@@ -1343,10 +1357,26 @@ private:
         }
     }
 
+    // ── 현물 quote currency 판별 ──
+    static std::string spot_quote_currency(const std::string& symbol) {
+        if (symbol.size() > 3 && symbol.substr(symbol.size()-3) == "KRW") return "KRW";
+        if (symbol.size() > 4 && symbol.substr(symbol.size()-4) == "USDT") return "USDT";
+        if (symbol.size() > 3 && symbol.substr(symbol.size()-3) == "BTC") return "BTC";
+        return "UNKNOWN";
+    }
+
     // ── 현물 진입: buy만 허용, sell(숏)은 무시 ──
     void handle_spot_entry(int wid, const WebhookSignal& sig) {
         if (sig.action == "sell") {
             spdlog::info("[W-{}] SPOT_SKIP {}: sell entry ignored (no short in spot)", wid, sig.symbol);
+            m_orders_skipped.fetch_add(1);
+            return;
+        }
+
+        // ★ KRW 페어만 허용 — BTC/USDT 페어는 가격 단위가 달라 수량 계산 오류 발생
+        std::string quote = spot_quote_currency(sig.symbol);
+        if (quote != "KRW") {
+            spdlog::info("[W-{}] SPOT_SKIP {}: non-KRW pair (quote={})", wid, sig.symbol, quote);
             m_orders_skipped.fetch_add(1);
             return;
         }

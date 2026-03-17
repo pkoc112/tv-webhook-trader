@@ -298,11 +298,31 @@ private:
         m_symbol_grades[grade_key] = compute_grade(total, wins, total_pnl, wr);
     }
 
+    // ── quote currency 판별 ──
+    static std::string spot_quote_currency(const std::string& symbol) {
+        if (symbol.size() > 3 && symbol.substr(symbol.size()-3) == "KRW") return "KRW";
+        if (symbol.size() > 4 && symbol.substr(symbol.size()-4) == "USDT") return "USDT";
+        if (symbol.size() > 3 && symbol.substr(symbol.size()-3) == "BTC") return "BTC";
+        return "UNKNOWN";
+    }
+
     // ── Entry 처리: 현물은 buy만 (LONG ONLY) ──
     void track_entry(const WebhookSignal& sig) {
         // 현물은 LONG ONLY: buy만 진입
         if (sig.action != "buy") {
             spdlog::debug("[SPOT_SHADOW] Ignoring non-buy entry: {} {}", sig.symbol, sig.action);
+            return;
+        }
+
+        // ★ Upbit KRW 페어만 허용 / Bitget USDT 페어만 허용
+        // BTC 페어는 가격 스케일이 달라 노셔널 계산 오류 발생
+        std::string quote = spot_quote_currency(sig.symbol);
+        if (sig.exchange == "upbit" && quote != "KRW") {
+            spdlog::debug("[SPOT_SHADOW] Skipping non-KRW Upbit pair: {} (quote={})", sig.symbol, quote);
+            return;
+        }
+        if (sig.exchange == "bitget" && quote != "USDT") {
+            spdlog::debug("[SPOT_SHADOW] Skipping non-USDT Bitget pair: {} (quote={})", sig.symbol, quote);
             return;
         }
 
@@ -632,8 +652,15 @@ private:
 
                     std::string key = p.value("key",
                         make_key(vp.symbol, vp.timeframe, vp.exchange));
-                    if (!vp.symbol.empty()) {
+                    // ★ KRW/USDT 페어만 복구 (BTC 페어 제거)
+                    std::string quote = spot_quote_currency(vp.symbol);
+                    bool valid = (vp.exchange == "upbit" && quote == "KRW")
+                              || (vp.exchange == "bitget" && quote == "USDT")
+                              || (quote == "KRW" || quote == "USDT"); // fallback
+                    if (!vp.symbol.empty() && valid) {
                         m_positions[key] = vp;
+                    } else if (!vp.symbol.empty()) {
+                        spdlog::warn("[SPOT_SHADOW] Removing invalid pair on load: {} (quote={})", vp.symbol, quote);
                     }
                 }
             }
