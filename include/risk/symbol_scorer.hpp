@@ -28,11 +28,13 @@ namespace hft {
 
 // -- null-safe JSON value accessor --
 // nlohmann::json .value() throws type_error::306 when key exists but value is null
+// Wraps entire logic in try-catch to prevent any exception propagation
 template<typename T>
-T json_safe(const nlohmann::json& j, const std::string& key, const T& default_val) {
-    if (!j.contains(key) || j[key].is_null()) return default_val;
-    try { return j[key].get<T>(); }
-    catch (...) { return default_val; }
+inline T json_safe(const nlohmann::json& j, const std::string& key, T default_val) {
+    try {
+        if (!j.is_object() || !j.contains(key) || j[key].is_null()) return default_val;
+        return j[key].get<T>();
+    } catch (...) { return default_val; }
 }
 
 // -- 거래 기록 (JSON 역직렬화용) --
@@ -51,6 +53,7 @@ struct TradeRecord {
 };
 
 inline void from_json(const nlohmann::json& j, TradeRecord& t) {
+    if (!j.is_object()) return;  // guard against null/non-object entries
     t.symbol      = json_safe<std::string>(j, "symbol", "");
     t.timeframe   = json_safe<std::string>(j, "timeframe", "");
     t.exit_reason = json_safe<std::string>(j, "exit_reason", "");
@@ -81,6 +84,7 @@ inline void to_json(nlohmann::json& j, const TfSubScore& s) {
 }
 
 inline void from_json(const nlohmann::json& j, TfSubScore& s) {
+    if (!j.is_object()) return;
     s.trades  = json_safe<int>(j, "trades", 0);
     s.wins    = json_safe<int>(j, "wins", 0);
     s.win_rate = json_safe<double>(j, "win_rate", 0.0) / 100.0; // stored as %, load as ratio
@@ -141,6 +145,7 @@ inline void to_json(nlohmann::json& j, const SymbolScore& s) {
 }
 
 inline void from_json(const nlohmann::json& j, SymbolScore& s) {
+    if (!j.is_object()) return;  // guard against null/non-object entries
     s.symbol            = json_safe<std::string>(j, "symbol", "");
     s.tier              = json_safe<std::string>(j, "tier", "C");
     s.total_trades      = json_safe<int>(j, "total_trades", 0);
@@ -202,10 +207,14 @@ public:
         m_th_D = th.value("D", 15.0);
 
         auto sm = cfg.value("tier_size_multiplier", nlohmann::json::object());
-        for (auto& [k, v] : sm.items()) m_size_mult[k] = v.get<double>();
+        for (auto& [k, v] : sm.items()) {
+            if (!v.is_null() && v.is_number()) m_size_mult[k] = v.get<double>();
+        }
 
         auto ml = cfg.value("tier_max_leverage", nlohmann::json::object());
-        for (auto& [k, v] : ml.items()) m_max_lev[k] = v.get<int>();
+        for (auto& [k, v] : ml.items()) {
+            if (!v.is_null() && v.is_number()) m_max_lev[k] = v.get<int>();
+        }
 
         // REVERSE 설정
         auto rev = config.value("reverse_filter", nlohmann::json::object());
