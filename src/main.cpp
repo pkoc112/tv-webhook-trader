@@ -242,13 +242,44 @@ int main(int argc, char* argv[]) {
         uint16_t dash_port = config.value("dashboard_port", 5000);
         hft::DashboardCallbacks dash_cb{
             .get_stats = [&exec_engine]() { return exec_engine.get_stats(); },
-            .get_risk_status = [&exec_engine, &portfolio_risk]() {
+            .get_risk_status = [&exec_engine, &portfolio_risk, &scorer]() {
                 auto state = exec_engine.portfolio_state();
                 auto check_stats = portfolio_risk.get_check_stats();
+
+                // 학습 진행 상황: 티어별 심볼 수
+                auto all_scores = scorer.scores_snapshot();
+                nlohmann::json learning;
+                std::unordered_map<std::string, int> tier_dist;
+                int data_sufficient = 0;
+                for (auto& [_, s] : all_scores) {
+                    tier_dist[s.tier]++;
+                    if (s.data_sufficient) data_sufficient++;
+                }
+                learning["total_scored"] = all_scores.size();
+                learning["data_sufficient"] = data_sufficient;
+                learning["tier_distribution"] = tier_dist;
+                learning["shadow_mode"] = portfolio_risk.is_shadow_mode();
+                learning["live_min_tier"] = portfolio_risk.get_live_min_tier();
+
+                // Live 모드 진입 가능 심볼 수
+                std::string min_tier = portfolio_risk.get_live_min_tier();
+                int live_ready = 0;
+                for (auto& [_, s] : all_scores) {
+                    if (s.data_sufficient) {
+                        // B 이상이면 live ready
+                        if (min_tier == "S" && s.tier == "S") live_ready++;
+                        else if (min_tier == "A" && (s.tier == "S" || s.tier == "A")) live_ready++;
+                        else if (min_tier == "B" && (s.tier == "S" || s.tier == "A" || s.tier == "B")) live_ready++;
+                        else if (min_tier == "C" && s.tier != "D" && s.tier != "X") live_ready++;
+                    }
+                }
+                learning["live_ready_symbols"] = live_ready;
+
                 return nlohmann::json{
                     {"portfolio", state},
                     {"check_stats", check_stats},
-                    {"risk_skips", exec_engine.risk_skip_count()}
+                    {"risk_skips", exec_engine.risk_skip_count()},
+                    {"learning", learning}
                 };
             },
             .get_symbol_scores = [&scorer]() { return scorer.get_all_scores_json(); },

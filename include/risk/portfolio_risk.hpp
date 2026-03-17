@@ -87,6 +87,16 @@ public:
         m_max_concurrent = cfg.value("max_concurrent_positions", 15);
         m_max_same_direction = cfg.value("max_same_direction", 10);
 
+        // Shadow 모드용 완화된 한도 (학습 데이터 빠른 수집)
+        auto shadow = cfg.value("shadow_limits", nlohmann::json::object());
+        m_shadow_max_pos_total    = shadow.value("max_positions_total", 500);
+        m_shadow_max_concurrent   = shadow.value("max_concurrent_positions", 200);
+        m_shadow_max_same_dir     = shadow.value("max_same_direction", 100);
+        m_shadow_max_margin_pct   = shadow.value("max_margin_usage_pct", 500.0);
+
+        // Live 모드 최소 티어 (학습 완료된 심볼만 실전 진입)
+        m_live_min_tier = cfg.value("live_min_tier", "B");
+
         if (cfg.contains("max_positions_per_tf")) {
             for (auto& [k, v] : cfg["max_positions_per_tf"].items())
                 m_max_pos_per_tf[k] = v.get<int>();
@@ -110,6 +120,28 @@ public:
     }
 
     // ── Public API ──
+
+    void set_shadow_mode(bool shadow) {
+        std::lock_guard lock(m_mtx);
+        m_shadow_mode = shadow;
+        if (shadow) {
+            spdlog::info("[RISK] Shadow mode: limits relaxed (concurrent={}, total={}, same_dir={})",
+                m_shadow_max_concurrent, m_shadow_max_pos_total, m_shadow_max_same_dir);
+        } else {
+            spdlog::info("[RISK] Live mode: strict limits (concurrent={}, total={}, same_dir={}, min_tier={})",
+                m_max_concurrent, m_max_pos_total, m_max_same_direction, m_live_min_tier);
+        }
+    }
+
+    [[nodiscard]] bool is_shadow_mode() const {
+        std::lock_guard lock(m_mtx);
+        return m_shadow_mode;
+    }
+
+    [[nodiscard]] std::string get_live_min_tier() const {
+        std::lock_guard lock(m_mtx);
+        return m_live_min_tier;
+    }
 
     void update_balance(double balance) {
         std::lock_guard lock(m_mtx);
@@ -191,12 +223,16 @@ public:
             }
         }
 
-        // 2a. HARD concurrent position limit (primary defense against over-exposure)
+        // 2a. HARD concurrent position limit
+        //     Shadow mode: 완화된 한도 (학습 데이터 수집)
+        //     Live mode: 엄격한 한도 (자본 보호)
         int total_pos = static_cast<int>(positions.size());
-        if (total_pos >= m_max_concurrent) {
+        int eff_max_concurrent = m_shadow_mode ? m_shadow_max_concurrent : m_max_concurrent;
+        if (total_pos >= eff_max_concurrent) {
             return block("max_concurrent_positions",
-                "HARD LIMIT: " + std::to_string(total_pos) + "/" + std::to_string(m_max_concurrent)
-                + " concurrent positions (balance protection)");
+                (m_shadow_mode ? "SHADOW " : "HARD ") + std::string("LIMIT: ")
+                + std::to_string(total_pos) + "/" + std::to_string(eff_max_concurrent)
+                + " concurrent positions");
         }
 
         // 2b. Same-direction concentration limit
@@ -209,17 +245,19 @@ public:
                 if ((is_long_entry && p_is_long) || (!is_long_entry && !p_is_long))
                     same_dir_count++;
             }
-            if (same_dir_count >= m_max_same_direction) {
+            int eff_max_same_dir = m_shadow_mode ? m_shadow_max_same_dir : m_max_same_direction;
+            if (same_dir_count >= eff_max_same_dir) {
                 return block("max_same_direction",
                     dir + " concentration: " + std::to_string(same_dir_count)
-                    + "/" + std::to_string(m_max_same_direction) + " (directional risk limit)");
+                    + "/" + std::to_string(eff_max_same_dir));
             }
         }
 
-        // 2c. Legacy total positions cap (soft ceiling, should be >= max_concurrent)
-        if (total_pos >= m_max_pos_total) {
+        // 2c. Total positions cap
+        int eff_max_total = m_shadow_mode ? m_shadow_max_pos_total : m_max_pos_total;
+        if (total_pos >= eff_max_total) {
             return block("max_positions",
-                "Max positions: " + std::to_string(total_pos) + "/" + std::to_string(m_max_pos_total));
+                "Max positions: " + std::to_string(total_pos) + "/" + std::to_string(eff_max_total));
         }
 
         // 3. TF별 포지션 제한
@@ -268,16 +306,17 @@ public:
                 "Correlated risk: " + fmt0(corr_risk) + "/" + fmt0(corr_limit));
         }
 
-        // 6. 마진 체크
+        // 6. 마진 체크 (shadow 모드에서는 가상이므로 완화)
         double margin_needed = price * qty / leverage;
         double total_margin = 0.0;
         for (auto& [_, p] : positions) {
             total_margin += std::abs(p.entry_price * p.quantity) / p.leverage;
         }
-        double margin_limit = balance * (m_max_margin_usage_pct / 100.0);
+        double eff_margin_pct = m_shadow_mode ? m_shadow_max_margin_pct : m_max_margin_usage_pct;
+        double margin_limit = balance * (eff_margin_pct / 100.0);
         if (total_margin + margin_needed > margin_limit) {
             return block("margin_limit",
-                "Margin " + fmt0(m_max_margin_usage_pct) + "%: " + fmt2(total_margin + margin_needed) + "/" + fmt2(margin_limit));
+                "Margin " + fmt0(eff_margin_pct) + "%: " + fmt2(total_margin + margin_needed) + "/" + fmt2(margin_limit));
         }
 
         m_checks_passed++;
@@ -430,6 +469,14 @@ private:
     int    m_max_pos_total{50};
     int    m_max_concurrent{15};       // HARD limit on total open positions
     int    m_max_same_direction{10};   // Max positions in same direction (long/short)
+
+    // Shadow mode (학습 데이터 수집용 완화 한도)
+    bool   m_shadow_mode{false};
+    int    m_shadow_max_pos_total{500};
+    int    m_shadow_max_concurrent{200};
+    int    m_shadow_max_same_dir{100};
+    double m_shadow_max_margin_pct{500.0};
+    std::string m_live_min_tier{"B"};  // Live 모드 최소 허용 티어
     std::unordered_map<std::string, int>    m_max_pos_per_tf;
     std::unordered_map<std::string, double> m_tf_exposure_pct;
     double m_corr_factor{0.7};

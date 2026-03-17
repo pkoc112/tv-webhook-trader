@@ -164,6 +164,9 @@ public:
 
         m_running.store(true, std::memory_order_relaxed);
 
+        // Shadow/Live 모드 설정을 포트폴리오 리스크 매니저에 전파
+        m_port_risk.set_shadow_mode(m_trading.shadow_mode);
+
         if (!m_trading.shadow_mode) {
             init_leverage();
         }
@@ -597,12 +600,21 @@ private:
             return;
         }
 
-        // 1. 티어 체크
+        // 1. 티어 체크 — Shadow vs Live 모드 분기
         std::string tier = m_scorer.get_tier(sig.symbol);
-        if (tier == "X" || tier == "D") {
-            spdlog::info("[W-{}] SKIP {}: {}-tier", wid, sig.symbol, tier);
-            m_risk_skips.fetch_add(1);
-            return;
+        if (m_trading.shadow_mode) {
+            // Shadow 모드: 모든 티어 허용 (학습 데이터 수집)
+            // X/D 티어도 진입 → 거래 기록 → 스코어링에 반영
+            spdlog::debug("[W-{}] SHADOW {} tier={} (all tiers allowed)", wid, sig.symbol, tier);
+        } else {
+            // Live 모드: 학습 검증된 심볼만 실전 매매
+            std::string live_min = m_port_risk.get_live_min_tier();
+            if (!tier_meets_min(tier, live_min)) {
+                spdlog::info("[W-{}] SKIP {}: tier {} < live_min {} (unproven symbol)",
+                    wid, sig.symbol, tier, live_min);
+                m_risk_skips.fetch_add(1);
+                return;
+            }
         }
 
         // 1.5. 학습 엔진 판단 (L1~L4)
@@ -625,7 +637,7 @@ private:
             return;
         }
 
-        // 2. TF 필터
+        // 2. TF 필터 (shadow 모드에서는 티어 체크 스킵, reverse 블록만 유지)
         auto tf_it = m_trading.tf_filters.find(tf);
         if (tf_it != m_trading.tf_filters.end()) {
             auto& filt = tf_it->second;
@@ -634,7 +646,7 @@ private:
                 m_risk_skips.fetch_add(1);
                 return;
             }
-            if (!tier_meets_min(tier, filt.min_tier)) {
+            if (!m_trading.shadow_mode && !tier_meets_min(tier, filt.min_tier)) {
                 spdlog::info("[W-{}] SKIP {}: tier {} < {} for TF {}",
                     wid, sig.symbol, tier, filt.min_tier, tf);
                 m_risk_skips.fetch_add(1);
@@ -642,17 +654,23 @@ private:
             }
         }
 
-        // 3. 수수료 수익성
+        // 3. 수수료 수익성 (shadow 모드에서는 로그만, 차단 안 함)
         if (sig.has_tp1() && sig.price > 0) {
             double custom_ratio = 0;
             if (tf_it != m_trading.tf_filters.end())
                 custom_ratio = tf_it->second.min_tp_to_cost_ratio;
             auto tp_chk = m_fee.is_tp_profitable(sig.symbol, sig.price, sig.tp1, custom_ratio);
             if (!tp_chk.profitable) {
-                spdlog::info("[W-{}] SKIP {}: TP1 ratio={:.1f} < {:.1f}",
-                    wid, sig.symbol, tp_chk.ratio, tp_chk.min_ratio);
-                m_risk_skips.fetch_add(1);
-                return;
+                if (m_trading.shadow_mode) {
+                    // Shadow: 기록은 하되 차단하지 않음 (수수료 부족 시그널도 학습)
+                    spdlog::debug("[W-{}] SHADOW_FEE {}: ratio={:.1f} < {:.1f} (allowed for learning)",
+                        wid, sig.symbol, tp_chk.ratio, tp_chk.min_ratio);
+                } else {
+                    spdlog::info("[W-{}] SKIP {}: TP1 ratio={:.1f} < {:.1f}",
+                        wid, sig.symbol, tp_chk.ratio, tp_chk.min_ratio);
+                    m_risk_skips.fetch_add(1);
+                    return;
+                }
             }
         }
 

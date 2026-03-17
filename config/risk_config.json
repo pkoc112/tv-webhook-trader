@@ -79,7 +79,15 @@
             "daily_loss_pct": 5.0,
             "weekly_loss_pct": 10.0,
             "cooldown_minutes": 60
-        }
+        },
+        "shadow_limits": {
+            "_comment": "Shadow 모드: 529심볼 전체 학습용 완화 한도",
+            "max_concurrent_positions": 200,
+            "max_same_direction": 100,
+            "max_positions_total": 500,
+            "max_margin_usage_pct": 500.0
+        },
+        "live_min_tier": "B"
     },
 
     "tf_filters": {
