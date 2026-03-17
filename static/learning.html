@@ -376,7 +376,7 @@ let statsData = {};
 let positionsData = [];
 
 function getAuth() {
-    authToken = localStorage.getItem('hft_auth') || sessionStorage.getItem('hft_auth') || '';
+    authToken = localStorage.getItem('dash_auth') || sessionStorage.getItem('dash_auth') || '';
     if (!authToken) {
         window.location.href = '/';
     }
