@@ -353,7 +353,8 @@ def cmd_help(chat_id, msg_id):
         "/close BTC - \uccad\uc0b0\n"
         "/closeall - \uc804\uccb4\uccad\uc0b0\n"
         "/restart - \uc7ac\uc2dc\uc791\n"
-        "/l - \ub85c\uadf8"
+        "/l - \ub85c\uadf8\n"
+        "/summary - \uc77c\uc77c\uc694\uc57d"
     )
     send_telegram(text, chat_id, msg_id)
 
@@ -627,6 +628,8 @@ COMMANDS = {
     "/logs": cmd_logs,
     "/l": cmd_logs,
     "/restart": cmd_restart,
+    "/summary": lambda ci, mi: send_daily_summary(),
+    "/daily": lambda ci, mi: send_daily_summary(),
 }
 
 def handle_command(text: str, chat_id: str, msg_id: int):
@@ -755,6 +758,95 @@ def follow_journal():
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Daily Summary Report
+# ---------------------------------------------------------------------------
+_last_daily_stats = None  # 전일 스냅샷
+
+def send_daily_summary():
+    """매일 09:00 KST 일일 성과 요약 전송"""
+    global _last_daily_stats
+    try:
+        stats = api_get("/api/stats")
+        learner = api_get("/api/learner/summary")
+        if not stats:
+            log.warning("Daily summary: failed to fetch stats")
+            return
+
+        now_kst = datetime.now(KST).strftime("%m/%d %H:%M")
+        equity = stats.get("balance", 0) + stats.get("unrealized_pnl", 0)
+        if stats.get("equity", 0) > 0:
+            equity = stats["equity"]
+
+        total = stats.get("total_trades", 0)
+        wins = stats.get("wins", 0)
+        losses = stats.get("losses", 0)
+        wr = stats.get("win_rate", 0)
+        pnl = stats.get("total_pnl", 0)
+        upnl = stats.get("unrealized_pnl", 0)
+        open_pos = stats.get("open_positions", 0)
+
+        # 전일 대비 변동
+        delta_str = ""
+        if _last_daily_stats:
+            prev_pnl = _last_daily_stats.get("total_pnl", 0)
+            prev_trades = _last_daily_stats.get("total_trades", 0)
+            day_pnl = pnl - prev_pnl
+            day_trades = total - prev_trades
+            sign = "+" if day_pnl >= 0 else ""
+            delta_str = f"\n📊 <b>오늘:</b> {day_trades}건 | {sign}{day_pnl:.4f} USDT"
+
+        # 학습 엔진 상태
+        learn_str = ""
+        if learner:
+            bl = learner.get("blacklisted", 0)
+            cool = learner.get("cooling_down", 0)
+            learned = learner.get("learned_tpsl", 0)
+            entries = learner.get("total_entries", 0)
+            learn_str = f"\n🧠 학습: {entries}항목 | 쿨다운:{cool} | 블랙:{bl} | TP/SL학습:{learned}"
+
+        msg = (
+            f"📋 <b>일일 리포트</b> ({now_kst} KST)\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"💰 총자산: <b>{equity:.2f}</b> USDT\n"
+            f"   가용: {stats.get('balance', 0):.2f} | uPnL: {upnl:+.4f}\n"
+            f"📈 성과: {total}건 ({wins}W/{losses}L) 승률 {wr:.1f}%\n"
+            f"💵 실현PnL: {pnl:+.4f} USDT"
+            f"{delta_str}\n"
+            f"📂 오픈: {open_pos}건"
+            f"{learn_str}"
+        )
+        send_telegram(msg)
+        _last_daily_stats = stats
+        log.info("Daily summary sent")
+    except Exception as e:
+        log.error("Daily summary error: %s", e)
+
+def daily_summary_scheduler():
+    """매일 09:00 KST(00:00 UTC)에 일일 요약 전송"""
+    while _running:
+        try:
+            now = datetime.now(KST)
+            # 다음 09:00 KST 계산
+            target = now.replace(hour=9, minute=0, second=0, microsecond=0)
+            if now >= target:
+                target += timedelta(days=1)
+            wait_secs = (target - now).total_seconds()
+            log.info("Next daily summary in %.0f seconds (%s)", wait_secs, target.strftime("%m/%d %H:%M KST"))
+
+            # 대기 (1분 단위로 깨어나 _running 확인)
+            while wait_secs > 0 and _running:
+                sleep_time = min(wait_secs, 60)
+                time.sleep(sleep_time)
+                wait_secs -= sleep_time
+
+            if _running:
+                send_daily_summary()
+        except Exception as e:
+            log.error("Daily scheduler error: %s", e)
+            time.sleep(300)
+
+
 def main():
     global _running
 
@@ -787,6 +879,11 @@ def main():
     poll_thread = threading.Thread(target=poll_updates, daemon=True)
     poll_thread.start()
     log.info("Command polling thread started")
+
+    # Start daily summary scheduler
+    daily_thread = threading.Thread(target=daily_summary_scheduler, daemon=True)
+    daily_thread.start()
+    log.info("Daily summary scheduler started")
 
     # Startup notification
     now_kst = datetime.now(KST).strftime("%m/%d %H:%M")

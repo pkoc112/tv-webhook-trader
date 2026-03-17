@@ -71,6 +71,7 @@ struct TradingConfig {
     double order_rate_limit{9.0};
     double tpsl_rate_limit{9.0};
     bool   shadow_mode{false};   // true = 로그만, 실주문 안함
+    double backup_sl_pct{0.03};  // 백업 SL: TV SL 없을 때 3% 안전망
     std::unordered_set<std::string> allowed_symbols;
     std::unordered_map<std::string, double> symbol_sizes;
     std::unordered_map<std::string, int>    symbol_leverages;
@@ -730,6 +731,17 @@ private:
         // 주문 실행 (preset TP/SL 포함 — 별도 API보다 안정적)
         double preset_tp = sig.has_tp1() ? sig.tp1 : 0;
         double preset_sl = sig.has_sl() ? sig.sl : 0;
+
+        // 백업 SL: TV에서 SL 미제공 시 안전망 (기본 3%)
+        // TV SL 시그널이 1차, 이 프리셋이 2차 안전장치
+        if (preset_sl <= 0 && m_trading.backup_sl_pct > 0 && sig.price > 0) {
+            bool is_long = (sig.action == "buy");
+            preset_sl = is_long
+                ? sig.price * (1.0 - m_trading.backup_sl_pct)
+                : sig.price * (1.0 + m_trading.backup_sl_pct);
+            spdlog::info("[W-{}] Backup SL injected: {:.4f} ({:.1f}% from entry {:.4f})",
+                wid, preset_sl, m_trading.backup_sl_pct * 100.0, sig.price);
+        }
         m_order_limiter.acquire();
         m_risk.on_order_placed();
         auto resp = rest.place_futures_order(order_req, preset_tp, preset_sl);

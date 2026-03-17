@@ -7,6 +7,7 @@ PartOf=tv-webhook-trader.service
 [Service]
 Type=simple
 User=ubuntu
+WorkingDirectory=/home/ubuntu/tv-webhook-trader
 ExecStart=/usr/bin/python3 /home/ubuntu/tv-webhook-trader/scripts/telegram_alert.py
 Restart=always
 RestartSec=10
