@@ -53,6 +53,9 @@ struct DashboardCallbacks {
     std::function<nlohmann::json()> get_strategy_stats;
     std::function<nlohmann::json(const nlohmann::json&)> import_trades;
 
+    // ── 전체 포지션 청산 ──
+    std::function<nlohmann::json()> close_all_positions;
+
     // ── Shadow Tracker 콜백 (학습 전용 가상 추적) ──
     std::function<nlohmann::json()> get_shadow_stats;
     std::function<nlohmann::json()> get_shadow_positions;
@@ -315,6 +318,15 @@ private:
                         m_cb.get_strategy_stats().dump());
                 }
                 return make_response(http::status::ok, "[]");
+            }
+            // ── 전체 포지션 청산 (POST /api/close-all) ──
+            if (target == "/api/close-all" && req.method() == http::verb::post) {
+                if (m_cb.close_all_positions) {
+                    auto result = m_cb.close_all_positions();
+                    return make_response(http::status::ok, result.dump());
+                }
+                return make_response(http::status::internal_server_error,
+                    R"({"error":"close_all not configured"})");
             }
             // ── Shadow Tracker API (학습 전용 가상 추적) ──
             if (target == "/api/shadow/stats") {

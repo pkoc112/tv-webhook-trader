@@ -373,6 +373,65 @@ public:
         return m_trade_rec.get_strategy_stats();
     }
 
+    // ── 전체 선물 포지션 긴급 청산 ──
+    // Returns JSON: { closed: N, failed: N, details: [...] }
+    nlohmann::json close_all_positions() {
+        spdlog::warn("[CLOSE_ALL] Initiating close of ALL futures positions");
+
+        net::io_context ioc;
+        BitgetRestClient rest(ioc, m_auth, m_rest_config);
+
+        std::vector<std::pair<std::string, std::string>> to_close; // {symbol, side}
+        {
+            std::lock_guard lock(m_pos_mtx);
+            for (auto& [key, pos] : m_positions) {
+                to_close.emplace_back(pos.symbol, pos.side);
+            }
+        }
+
+        int closed = 0, failed = 0;
+        auto details = nlohmann::json::array();
+
+        for (auto& [symbol, side] : to_close) {
+            std::string hold_side = side; // "long" or "short"
+            m_order_limiter.acquire();
+            bool ok = rest.flash_close_position(symbol, hold_side);
+
+            if (ok) {
+                closed++;
+                // 내부 포지션 제거
+                {
+                    std::lock_guard lock(m_pos_mtx);
+                    for (auto it = m_positions.begin(); it != m_positions.end(); ++it) {
+                        if (it->second.symbol == symbol && it->second.side == side) {
+                            // PnL은 거래소에서 정산하므로 여기선 제거만
+                            m_trade_rec.record_close(it->second, it->second.entry_price, "MANUAL_CLOSE_ALL");
+                            m_positions.erase(it);
+                            break;
+                        }
+                    }
+                }
+                details.push_back({{"symbol", symbol}, {"side", side}, {"status", "closed"}});
+                spdlog::info("[CLOSE_ALL] Closed: {} {}", symbol, side);
+            } else {
+                failed++;
+                details.push_back({{"symbol", symbol}, {"side", side}, {"status", "failed"}});
+                spdlog::error("[CLOSE_ALL] Failed: {} {}", symbol, side);
+            }
+        }
+
+        // Save state after closing
+        m_pos_mgr.save_state(m_trades, m_orders_executed.load());
+
+        spdlog::warn("[CLOSE_ALL] Done: closed={} failed={} total={}", closed, failed, to_close.size());
+        return nlohmann::json{
+            {"closed", closed},
+            {"failed", failed},
+            {"total", static_cast<int>(to_close.size())},
+            {"details", details}
+        };
+    }
+
     // ── Import external trade records (e.g., from Python sfx-trader) ──
     // Returns: number of new trades imported (duplicates skipped)
     int import_trades(const std::vector<TradeRecord>& external_trades) {
@@ -752,6 +811,42 @@ private:
                     wid, sig.symbol, tier, live_min);
                 m_risk_skips.fetch_add(1);
                 return;
+            }
+        }
+
+        // 1.2. ★ Shadow Tracker 등급 필터 — 가상 추적 성적 기반
+        // Shadow에서 충분한 데이터(5거래+)가 쌓이고 등급이 C 이하면 진입 차단
+        {
+            auto shadow_report = m_shadow.get_symbol_report();
+            for (auto& sr : shadow_report) {
+                if (sr.value("symbol", "") == sig.symbol) {
+                    std::string grade = sr.value("grade", "?");
+                    int total = sr.value("total", 0);
+                    double pnl = sr.value("total_pnl", 0.0);
+
+                    if (grade == "?") {
+                        // 데이터 부족 (5건 미만) — 허용 (학습 필요)
+                        spdlog::debug("[W-{}] SHADOW_GRADE {}: ? ({}trades, need more data)",
+                            wid, sig.symbol, total);
+                    } else if (grade == "F" || grade == "D") {
+                        // F/D 등급 — 차단
+                        spdlog::info("[W-{}] SHADOW_SKIP {}: grade={} total={} pnl={:.4f} (poor quality)",
+                            wid, sig.symbol, grade, total, pnl);
+                        m_risk_skips.fetch_add(1);
+                        return;
+                    } else if (grade == "C" && total >= 10) {
+                        // C 등급, 10거래 이상이면 차단 (충분히 검증된 C)
+                        spdlog::info("[W-{}] SHADOW_SKIP {}: grade=C total={} pnl={:.4f} (marginal, blocked)",
+                            wid, sig.symbol, grade, total, pnl);
+                        m_risk_skips.fetch_add(1);
+                        return;
+                    } else {
+                        // A+, A, B 또는 초기 C — 허용
+                        spdlog::info("[W-{}] SHADOW_OK {}: grade={} total={} pnl={:.4f}",
+                            wid, sig.symbol, grade, total, pnl);
+                    }
+                    break;
+                }
             }
         }
 

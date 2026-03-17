@@ -346,6 +346,8 @@ int main(int argc, char* argv[]) {
                 int count = exec_engine.import_trades(records);
                 return {{"imported", count}, {"total_submitted", static_cast<int>(records.size())}, {"status", "ok"}};
             },
+            // ── 전체 포지션 청산 ──
+            .close_all_positions = [&exec_engine]() { return exec_engine.close_all_positions(); },
             // ── Shadow Tracker 콜백 (학습 전용 가상 추적) ──
             .get_shadow_stats = [&exec_engine]() { return exec_engine.get_shadow_stats(); },
             .get_shadow_positions = [&exec_engine]() { return exec_engine.get_shadow_positions(); },
