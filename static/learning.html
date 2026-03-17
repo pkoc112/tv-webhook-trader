@@ -363,6 +363,77 @@ tr:hover { background: var(--bg-card-hover); }
     </div>
 </div>
 
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- SHADOW TRACKER: 독립 가상 추적 시스템 -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div style="margin-top:8px;margin-bottom:16px;border-top:2px solid var(--orange);padding-top:16px">
+    <h2 style="font-size:16px;font-weight:700;color:var(--orange);margin-bottom:4px">Shadow Tracker (가상 추적)</h2>
+    <p style="font-size:11px;color:var(--text-muted);margin-bottom:16px">모든 시그널을 무조건 가상 진입/청산 → 심볼별 성적 체점 (실전 매매와 완전 분리)</p>
+</div>
+
+<!-- Shadow Stats -->
+<div class="stats-grid" style="grid-template-columns:repeat(6,1fr)">
+    <div class="stat-card">
+        <div class="label">총 진입</div>
+        <div class="value" id="shTotalEntries" style="color:var(--blue)">0</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">총 청산</div>
+        <div class="value" id="shTotalCloses">0</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">오픈 포지션</div>
+        <div class="value" id="shOpenPos" style="color:var(--cyan)">0</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">승률</div>
+        <div class="value" id="shWinRate">0%</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">W / L</div>
+        <div class="value" id="shWinLoss">0 / 0</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">총 PnL</div>
+        <div class="value" id="shTotalPnl">0.00</div>
+    </div>
+</div>
+
+<!-- Shadow Virtual Positions -->
+<div class="card">
+    <div class="card-title">Shadow 가상 오픈 포지션 <span id="shPosCount" style="color:var(--text-muted);font-weight:400">(0)</span></div>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>심볼</th><th>방향</th><th>TF</th><th>진입가</th><th>SL</th><th>TP1</th><th>전략</th><th>경과(분)</th></tr></thead>
+            <tbody id="shPositionsBody"></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Shadow Symbol Report + Trades -->
+<div class="two-col">
+    <!-- Symbol Report -->
+    <div class="card">
+        <div class="card-title">심볼별 Shadow 성적표</div>
+        <div class="table-scroll-lg">
+            <table>
+                <thead><tr><th>심볼</th><th>등급</th><th>거래</th><th>승</th><th>패</th><th>승률</th><th>총 PnL</th><th>평균 PnL</th></tr></thead>
+                <tbody id="shSymbolBody"></tbody>
+            </table>
+        </div>
+    </div>
+    <!-- Recent Trades -->
+    <div class="card">
+        <div class="card-title">Shadow 최근 거래 <span id="shTradeCount" style="color:var(--text-muted);font-weight:400">(0)</span></div>
+        <div class="table-scroll-lg">
+            <table>
+                <thead><tr><th>심볼</th><th>TF</th><th>진입가</th><th>청산가</th><th>PnL</th><th>수수료</th><th>사유</th></tr></thead>
+                <tbody id="shTradesBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
 </div>
 
 <script>
@@ -376,6 +447,10 @@ let symbolScores = [];
 let riskStatus = {};
 let statsData = {};
 let positionsData = [];
+let shadowStats = {};
+let shadowPositions = [];
+let shadowTrades = [];
+let shadowSymbols = [];
 
 function getAuth() {
     authToken = localStorage.getItem('dash_auth') || sessionStorage.getItem('dash_auth') || '';
@@ -404,17 +479,25 @@ function pnlClass(v) { return v > 0 ? 'pnl-pos' : v < 0 ? 'pnl-neg' : 'pnl-zero'
 
 async function refreshAll() {
     getAuth();
-    const [scores, risk, stats, positions] = await Promise.all([
+    const [scores, risk, stats, positions, shStats, shPos, shTrades, shSyms] = await Promise.all([
         fetchJson('/api/symbols/scores'),
         fetchJson('/api/risk/status'),
         fetchJson('/api/stats'),
-        fetchJson('/api/positions')
+        fetchJson('/api/positions'),
+        fetchJson('/api/shadow/stats'),
+        fetchJson('/api/shadow/positions'),
+        fetchJson('/api/shadow/trades'),
+        fetchJson('/api/shadow/symbols')
     ]);
 
     symbolScores = Array.isArray(scores) ? scores : (scores?.scores || []);
     riskStatus = risk || {};
     statsData = stats || {};
     positionsData = Array.isArray(positions) ? positions : [];
+    shadowStats = shStats || {};
+    shadowPositions = Array.isArray(shPos) ? shPos : [];
+    shadowTrades = Array.isArray(shTrades) ? shTrades : [];
+    shadowSymbols = Array.isArray(shSyms) ? shSyms : [];
 
     updateSummary();
     updateProgress();
@@ -422,6 +505,7 @@ async function refreshAll() {
     updateLearningStages();
     renderSymbolTable();
     renderPositions();
+    renderShadowTracker();
 
     document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('ko-KR');
 }
@@ -688,6 +772,89 @@ function renderPositions() {
             <td style="color:var(--text-muted)">${p.strategy || '-'}</td>
         </tr>`;
     }).join('');
+}
+
+// ── Shadow Tracker Rendering ──
+function renderShadowTracker() {
+    // Stats
+    const s = shadowStats;
+    document.getElementById('shTotalEntries').textContent = s.total_entries || 0;
+    document.getElementById('shTotalCloses').textContent = s.total_closes || 0;
+    document.getElementById('shOpenPos').textContent = s.open_positions || 0;
+    const wr = s.win_rate || 0;
+    const wrEl = document.getElementById('shWinRate');
+    wrEl.textContent = fmt(wr,1) + '%';
+    wrEl.style.color = wr >= 50 ? 'var(--green)' : wr > 0 ? 'var(--red)' : 'var(--text-primary)';
+    document.getElementById('shWinLoss').innerHTML = `<span style="color:var(--green)">${s.wins||0}</span> / <span style="color:var(--red)">${s.losses||0}</span>`;
+    const pnlEl = document.getElementById('shTotalPnl');
+    const pnl = s.total_pnl || 0;
+    pnlEl.textContent = fmtPnl(pnl, 4);
+    pnlEl.className = 'value ' + pnlClass(pnl);
+
+    // Virtual Positions
+    const posBody = document.getElementById('shPositionsBody');
+    document.getElementById('shPosCount').textContent = `(${shadowPositions.length})`;
+    if (shadowPositions.length === 0) {
+        posBody.innerHTML = '<tr><td colspan="8" class="empty-state">가상 포지션 없음</td></tr>';
+    } else {
+        posBody.innerHTML = shadowPositions.map(p => {
+            const sideColor = p.side === 'long' ? 'var(--green)' : 'var(--red)';
+            return `<tr>
+                <td style="font-weight:600">${(p.symbol||'').replace('USDT','')}</td>
+                <td style="color:${sideColor};font-weight:600">${(p.side||'').toUpperCase()}</td>
+                <td>${p.timeframe || '-'}</td>
+                <td>${fmt(p.entry_price, 6)}</td>
+                <td>${p.sl_price ? fmt(p.sl_price, 6) : '-'}</td>
+                <td>${p.tp1_price ? fmt(p.tp1_price, 6) : '-'}</td>
+                <td style="color:var(--text-muted)">${p.strategy || '-'}</td>
+                <td>${p.age_min || 0}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    // Symbol Report
+    const symBody = document.getElementById('shSymbolBody');
+    if (shadowSymbols.length === 0) {
+        symBody.innerHTML = '<tr><td colspan="8" class="empty-state">아직 청산된 거래 없음</td></tr>';
+    } else {
+        symBody.innerHTML = shadowSymbols.map(s => {
+            const gradeColors = {'A+':'#fbbf24','A':'#a78bfa','B':'#3b82f6','C':'#94a3b8','D':'#ef4444','F':'#7f1d1d','?':'#64748b'};
+            const gc = gradeColors[s.grade] || '#94a3b8';
+            return `<tr>
+                <td style="font-weight:600">${(s.symbol||'').replace('USDT','')}</td>
+                <td><span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;padding:2px 8px;border-radius:4px;background:${gc}22;color:${gc};border:1px solid ${gc}66">${s.grade}</span></td>
+                <td>${s.total||0}</td>
+                <td style="color:var(--green)">${s.wins||0}</td>
+                <td style="color:var(--red)">${s.losses||0}</td>
+                <td>${fmt(s.win_rate,1)}%</td>
+                <td class="${pnlClass(s.total_pnl)}">${fmtPnl(s.total_pnl,4)}</td>
+                <td class="${pnlClass(s.avg_pnl)}">${fmtPnl(s.avg_pnl,4)}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    // Recent Trades
+    const trBody = document.getElementById('shTradesBody');
+    document.getElementById('shTradeCount').textContent = `(${shadowTrades.length})`;
+    if (shadowTrades.length === 0) {
+        trBody.innerHTML = '<tr><td colspan="7" class="empty-state">아직 거래 없음</td></tr>';
+    } else {
+        // Show most recent first
+        const reversed = [...shadowTrades].reverse();
+        trBody.innerHTML = reversed.map(t => {
+            const reason = (t.exit_reason||'').replace('SHADOW_','');
+            const reasonColor = reason === 'TP' ? 'var(--green)' : reason === 'SL' ? 'var(--red)' : 'var(--yellow)';
+            return `<tr>
+                <td style="font-weight:600">${(t.symbol||'').replace('USDT','')}</td>
+                <td>${t.timeframe || '-'}</td>
+                <td>${fmt(t.entry_price, 6)}</td>
+                <td>${fmt(t.exit_price, 6)}</td>
+                <td class="${pnlClass(t.pnl)}">${fmtPnl(t.pnl, 4)}</td>
+                <td style="color:var(--text-muted)">${fmt(t.fee, 4)}</td>
+                <td style="color:${reasonColor};font-weight:600">${reason}</td>
+            </tr>`;
+        }).join('');
+    }
 }
 
 // ── Trade Import ──
