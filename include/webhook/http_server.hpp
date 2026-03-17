@@ -107,7 +107,7 @@ public:
 private:
     std::mutex m_mtx;
     std::map<std::string, std::deque<std::chrono::steady_clock::time_point>> m_requests;
-    int m_max_per_minute{30};
+    int m_max_per_minute{600};  // 529 symbols × multi-TF → burst can exceed 30/min easily
     uint64_t m_check_count{0};
 };
 
