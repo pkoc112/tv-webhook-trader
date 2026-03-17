@@ -63,7 +63,7 @@ public:
                     {"side", p.side}, {"entry_price", p.entry_price},
                     {"quantity", p.quantity}, {"leverage", p.leverage},
                     {"sl_price", p.sl_price}, {"tp1_price", p.tp1_price},
-                    {"tier", p.tier}
+                    {"tier", p.tier}, {"strategy", p.strategy}
                 };
             }
 
@@ -78,7 +78,7 @@ public:
                     {"exit_reason", t.exit_reason},
                     {"pnl", t.pnl}, {"fee", t.fee},
                     {"entry_price", t.entry_price}, {"exit_price", t.exit_price},
-                    {"quantity", t.quantity}
+                    {"quantity", t.quantity}, {"strategy", t.strategy}
                 });
             }
 
@@ -159,6 +159,7 @@ private:
                     p.sl_price    = pj.value("sl_price", 0.0);
                     p.tp1_price   = pj.value("tp1_price", 0.0);
                     p.tier        = pj.value("tier", "C");
+                    p.strategy    = pj.value("strategy", std::string("unknown"));
                     result.positions[key] = p;
                 }
             }

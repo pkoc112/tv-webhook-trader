@@ -191,7 +191,13 @@ int main(int argc, char* argv[]) {
         spdlog::info("  FeeAnalyzer: taker={:.2f}% maker={:.2f}%",
             risk_config.value("fee_analysis", json::object()).value("taker_fee_pct", 0.06),
             risk_config.value("fee_analysis", json::object()).value("maker_fee_pct", 0.02));
-        spdlog::info("  PortfolioRisk: max_pos={}", risk_config.value("portfolio_risk", json::object()).value("max_positions_total", 50));
+        {
+            auto pr_cfg = risk_config.value("portfolio_risk", json::object());
+            spdlog::info("  PortfolioRisk: max_concurrent={} max_same_dir={} max_total={}",
+                pr_cfg.value("max_concurrent_positions", 15),
+                pr_cfg.value("max_same_direction", 10),
+                pr_cfg.value("max_positions_total", 50));
+        }
 
         // -- 5. 트레이딩 설정 --
         auto trading_config = parse_trading_config(config, risk_config);
@@ -254,7 +260,7 @@ int main(int argc, char* argv[]) {
                         {"key", key}, {"symbol", p.symbol}, {"timeframe", p.timeframe},
                         {"side", p.side}, {"entry_price", p.entry_price},
                         {"quantity", p.quantity}, {"leverage", p.leverage},
-                        {"tier", p.tier}
+                        {"tier", p.tier}, {"strategy", p.strategy}
                     });
                 }
                 return arr;
@@ -265,6 +271,9 @@ int main(int argc, char* argv[]) {
             .get_tf_stats = [&exec_engine]() {
                 auto trades = exec_engine.trades_snapshot();
                 return hft::TfAnalytics::analyze(trades);
+            },
+            .get_strategy_stats = [&exec_engine]() {
+                return exec_engine.get_strategy_stats();
             }
         };
 

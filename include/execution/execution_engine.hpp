@@ -289,6 +289,11 @@ public:
         return m_trade_rec.snapshot();
     }
 
+    // ── Strategy performance stats for identifying bad signals ──
+    [[nodiscard]] nlohmann::json get_strategy_stats() const {
+        return m_trade_rec.get_strategy_stats();
+    }
+
 private:
     void init_leverage() {
         net::io_context ioc;
@@ -486,9 +491,9 @@ private:
         auto now = now_ns();
         auto latency_ns = now - sig.received_at;
         double latency_ms = latency_ns / 1'000'000.0;
-        spdlog::info("[Worker-{}] {} {} {} @ {:.2f} (lat: {:.1f}ms)",
+        spdlog::info("[Worker-{}] {} {} {} @ {:.2f} strat={} (lat: {:.1f}ms)",
             wid, signal_type_str(sig.sig_type), sig.action, sig.symbol,
-            sig.price, latency_ms);
+            sig.price, sig.strategy_name, latency_ms);
 
         // Stale signal detection - skip signals that are too old
         {
@@ -539,6 +544,14 @@ private:
                 return;
             }
             m_recent_fingerprints.emplace(fp, now);
+        }
+
+        // Re-validate signal after queue (defense in depth)
+        if (!sig.is_valid()) {
+            spdlog::warn("[W-{}] SKIP: invalid signal after dequeue: {} {} {}",
+                wid, sig.symbol, sig.action, sig.alert);
+            m_orders_skipped.fetch_add(1);
+            return;
         }
 
         // 화이트리스트
@@ -694,6 +707,27 @@ private:
         {
             std::lock_guard lock(m_pos_mtx);
             std::string entry_side = sig.action == "buy" ? "long" : "short";
+
+            // 5a. Opposite direction conflict: block if same symbol has opposite position
+            std::string opp_side = (entry_side == "long") ? "short" : "long";
+            for (auto& [_, p] : m_positions) {
+                if (p.symbol == sig.symbol && p.side == opp_side) {
+                    spdlog::warn("[W-{}] CONFLICT {}: existing {} vs new {} — SKIP",
+                        wid, sig.symbol, opp_side, entry_side);
+                    m_risk_skips.fetch_add(1);
+                    return;
+                }
+            }
+
+            // 5b. Same symbol same direction: block duplicate entry
+            for (auto& [_, p] : m_positions) {
+                if (p.symbol == sig.symbol && p.side == entry_side) {
+                    spdlog::info("[W-{}] SKIP {}: already has {} position", wid, sig.symbol, entry_side);
+                    m_orders_skipped.fetch_add(1);
+                    return;
+                }
+            }
+
             auto dec = m_port_risk.check_entry(
                 sig.symbol, tf, sig.price, sig.size, leverage, m_balance, m_positions,
                 sl_price, entry_side);
@@ -724,7 +758,7 @@ private:
             m_orders_executed.fetch_add(1);
             m_pos_mgr.register_position(sig.symbol, tf, side_str,
                 sig.price, sig.size, leverage, sl_price,
-                sig.has_tp1() ? sig.tp1 : 0, tier, oid);
+                sig.has_tp1() ? sig.tp1 : 0, tier, oid, sig.strategy_name);
             return;
         }
 
@@ -752,7 +786,7 @@ private:
             m_risk.on_position_opened(sig.symbol, sig.size, side_str);
             m_pos_mgr.register_position(sig.symbol, tf, side_str,
                 sig.price, sig.size, leverage, sl_price,
-                sig.has_tp1() ? sig.tp1 : 0, tier, oid);
+                sig.has_tp1() ? sig.tp1 : 0, tier, oid, sig.strategy_name);
 
             spdlog::info("[W-{}] OK {} {} sz={:.6f} exid={}",
                 wid, sig.action, sig.symbol, sig.size, resp.exchange_order_id);
@@ -788,6 +822,13 @@ private:
     void handle_tp(int wid, BitgetRestClient& rest, const WebhookSignal& sig) {
         spdlog::info("[W-{}] TP {} {} @ {:.2f}", wid, sig.tp_level, sig.symbol, sig.price);
 
+        // Symbol lock to prevent race with entry/SL on same symbol
+        if (!m_sym_locks.wait_lock(sig.symbol, std::chrono::seconds(10))) {
+            spdlog::warn("[W-{}] SKIP TP {}: symbol lock timeout", wid, sig.symbol);
+            return;
+        }
+        SymbolLockGuard guard(m_sym_locks, sig.symbol);
+
         // hold_side 결정: bull 시그널 = long 포지션 청산
         std::string hold_side = (sig.signal_direction == "bull") ? "long" : "short";
 
@@ -807,8 +848,49 @@ private:
 
         double close_qty = match.quantity * close_ratio;
 
-        m_order_limiter.acquire();
-        auto resp = rest.close_partial(sig.symbol, close_qty, hold_side);
+        if (m_trading.shadow_mode) {
+            // Shadow mode: simulate close without touching exchange
+            spdlog::info("[SHADOW] TP {} {} close_qty={:.6f}/{:.6f} hold={}",
+                sig.tp_level, sig.symbol, close_qty, match.quantity, hold_side);
+
+            std::lock_guard lock(m_pos_mtx);
+            auto* pos = m_pos_mgr.get(match.key);
+            if (pos) {
+                double exit_price = sig.price > 0 ? sig.price : pos->entry_price;
+
+                if (sig.tp_level == "TP3" || close_ratio >= 0.99) {
+                    double pnl = m_trade_rec.record_close(*pos, exit_price, sig.tp_level, close_qty);
+                    m_pos_mgr.remove(match.key);
+                    spdlog::info("[SHADOW] {} {} PnL={:.4f} @ {:.4f} (100%)",
+                        sig.tp_level, sig.symbol, pnl, exit_price);
+                    m_trade_rec.alert_trade("info", "[SHADOW] " + sig.tp_level + " " + sig.symbol +
+                        " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
+                } else {
+                    double pnl = m_trade_rec.record_close(*pos, exit_price,
+                        sig.tp_level + "_PARTIAL", close_qty);
+                    m_pos_mgr.reduce_quantity(match.key, close_qty);
+                    spdlog::info("[SHADOW] {} {} PnL={:.4f} @ {:.4f} ({:.0f}%)",
+                        sig.tp_level, sig.symbol, pnl, exit_price, close_ratio * 100);
+                }
+                m_pos_mgr.save_state(m_trades, m_orders_executed.load());
+            }
+            return;
+        }
+
+        // Retry logic for TP close (transient failures)
+        constexpr int MAX_CLOSE_RETRIES = 3;
+        OrderResponse resp;
+        for (int attempt = 1; attempt <= MAX_CLOSE_RETRIES; ++attempt) {
+            m_order_limiter.acquire();
+            resp = rest.close_partial(sig.symbol, close_qty, hold_side);
+            if (resp.status == OrderStatus::New) break;
+            if (attempt < MAX_CLOSE_RETRIES) {
+                spdlog::warn("[W-{}] TP {} close retry {}/{}: {} {}",
+                    wid, sig.tp_level, attempt, MAX_CLOSE_RETRIES,
+                    resp.error_code, std::string(resp.error_msg.data()));
+                std::this_thread::sleep_for(std::chrono::milliseconds(200 * attempt));
+            }
+        }
 
         if (resp.status == OrderStatus::New) {
             spdlog::info("[W-{}] TP {} closed {:.6f}/{:.6f} of {}",
@@ -838,15 +920,23 @@ private:
                 m_pos_mgr.save_state(m_trades, m_orders_executed.load());
             }
         } else {
-            spdlog::error("[W-{}] TP {} close failed: {} {}",
-                wid, sig.tp_level, resp.error_code,
+            spdlog::error("[W-{}] TP {} close FAILED after {} retries: {} {}",
+                wid, sig.tp_level, MAX_CLOSE_RETRIES, resp.error_code,
                 std::string(resp.error_msg.data()));
+            m_alerts.warn("TRADE", "TP close failed " + sig.tp_level + " " + sig.symbol, sig.symbol);
         }
     }
 
     // ── SL 시그널 처리: 전체 청산 ──
     void handle_sl(int wid, BitgetRestClient& rest, const WebhookSignal& sig) {
         spdlog::info("[W-{}] SL {} @ {:.2f}", wid, sig.symbol, sig.price);
+
+        // Symbol lock to prevent race with entry/TP on same symbol
+        if (!m_sym_locks.wait_lock(sig.symbol, std::chrono::seconds(10))) {
+            spdlog::warn("[W-{}] SKIP SL {}: symbol lock timeout", wid, sig.symbol);
+            return;
+        }
+        SymbolLockGuard guard(m_sym_locks, sig.symbol);
 
         std::string hold_side = (sig.signal_direction == "bull") ? "long" : "short";
 
@@ -859,9 +949,38 @@ private:
             return;
         }
 
-        // flash close로 전체 청산
-        m_order_limiter.acquire();
-        bool closed = rest.flash_close_position(sig.symbol, hold_side);
+        if (m_trading.shadow_mode) {
+            // Shadow mode: simulate full close without touching exchange
+            spdlog::info("[SHADOW] SL {} hold={} qty={:.6f}", sig.symbol, hold_side, match.quantity);
+
+            std::lock_guard lock(m_pos_mtx);
+            auto* pos = m_pos_mgr.get(match.key);
+            if (pos) {
+                double exit_price = sig.price > 0 ? sig.price : pos->sl_price;
+                double pnl = m_trade_rec.record_close(*pos, exit_price, "SL");
+                m_pos_mgr.remove(match.key);
+                m_pos_mgr.save_state(m_trades, m_orders_executed.load());
+                spdlog::info("[SHADOW] SL {} PnL={:.4f} @ {:.4f}",
+                    sig.symbol, pnl, exit_price);
+                m_trade_rec.alert_trade("warn", "[SHADOW] SL " + sig.symbol +
+                    " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
+            }
+            return;
+        }
+
+        // flash close with retry (SL must succeed)
+        constexpr int MAX_SL_RETRIES = 3;
+        bool closed = false;
+        for (int attempt = 1; attempt <= MAX_SL_RETRIES; ++attempt) {
+            m_order_limiter.acquire();
+            closed = rest.flash_close_position(sig.symbol, hold_side);
+            if (closed) break;
+            if (attempt < MAX_SL_RETRIES) {
+                spdlog::warn("[W-{}] SL close retry {}/{} for {} hold={}",
+                    wid, attempt, MAX_SL_RETRIES, sig.symbol, hold_side);
+                std::this_thread::sleep_for(std::chrono::milliseconds(300 * attempt));
+            }
+        }
 
         if (closed) {
             std::lock_guard lock(m_pos_mtx);
@@ -875,10 +994,16 @@ private:
                     sig.symbol, pnl, exit_price);
                 m_trade_rec.alert_trade("warn", "SL " + sig.symbol +
                     " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
+            } else {
+                // Position already removed by WS callback — that's OK, WS recorded PnL
+                spdlog::info("[W-{}] SL {} position already removed (WS callback)", wid, sig.symbol);
             }
             spdlog::info("[W-{}] SL closed {} hold={}", wid, sig.symbol, hold_side);
         } else {
-            spdlog::error("[W-{}] SL close FAILED for {} hold={}", wid, sig.symbol, hold_side);
+            spdlog::error("[W-{}] SL close FAILED after {} retries for {} hold={} — ALERT",
+                wid, MAX_SL_RETRIES, sig.symbol, hold_side);
+            m_alerts.critical("TRADE", "SL CLOSE FAILED " + sig.symbol + " " + hold_side +
+                " — manual intervention needed!", sig.symbol);
         }
     }
 
@@ -927,19 +1052,37 @@ private:
         if (!sl_ok) {
             spdlog::error("[W-{}] CRITICAL: SL failed after {} retries for {} — EMERGENCY CLOSE",
                 wid, MAX_RETRIES, sig.symbol);
-            m_order_limiter.acquire();
-            rest.flash_close_position(sig.symbol, hold_side);
 
-            // 내부 상태에서도 포지션 제거
-            std::lock_guard lock(m_pos_mtx);
-            auto result = m_pos_mgr.find_and_prepare_ws_close(sig.symbol, hold_side);
-            if (result.found) {
-                double exit_price = sig.price;  // 긴급청산은 현재가
-                double pnl = m_trade_rec.record_close(result.pos, exit_price, "EMERGENCY_CLOSE_NO_SL");
-                m_trade_rec.alert_trade("critical", "EMERGENCY CLOSE " + sig.symbol +
-                    " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
+            // Emergency close with retry and result verification
+            bool emergency_closed = false;
+            for (int ec_attempt = 1; ec_attempt <= 3; ++ec_attempt) {
+                m_order_limiter.acquire();
+                emergency_closed = rest.flash_close_position(sig.symbol, hold_side);
+                if (emergency_closed) break;
+                spdlog::error("[W-{}] Emergency close attempt {}/3 FAILED for {}", wid, ec_attempt, sig.symbol);
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
             }
-            m_pos_mgr.save_state(m_trades, m_orders_executed.load());
+
+            if (!emergency_closed) {
+                spdlog::error("[W-{}] ALL EMERGENCY CLOSE ATTEMPTS FAILED for {} — UNPROTECTED POSITION!",
+                    wid, sig.symbol);
+                m_alerts.critical("EMERGENCY",
+                    "UNPROTECTED POSITION " + sig.symbol + " " + hold_side +
+                    " — ALL close attempts failed! Manual intervention required!", sig.symbol);
+            }
+
+            // 내부 상태에서도 포지션 제거 (only if close succeeded)
+            if (emergency_closed) {
+                std::lock_guard lock(m_pos_mtx);
+                auto result = m_pos_mgr.find_and_prepare_ws_close(sig.symbol, hold_side);
+                if (result.found) {
+                    double exit_price = sig.price;  // 긴급청산은 현재가
+                    double pnl = m_trade_rec.record_close(result.pos, exit_price, "EMERGENCY_CLOSE_NO_SL");
+                    m_trade_rec.alert_trade("critical", "EMERGENCY CLOSE " + sig.symbol +
+                        " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
+                }
+                m_pos_mgr.save_state(m_trades, m_orders_executed.load());
+            }
         } else if (!tp_ok) {
             // TP만 실패: 위험하지 않으므로 로그만 (SL은 있음)
             spdlog::warn("[W-{}] TP failed after {} retries for {} — SL is active, continuing",

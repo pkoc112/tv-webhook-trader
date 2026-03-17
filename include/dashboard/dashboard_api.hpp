@@ -10,6 +10,7 @@
 //   GET /api/symbols/scores → 심볼 티어/점수
 //   GET /api/stats          → 거래 통계
 //   GET /api/positions      → 오픈 포지션
+//   GET /api/strategy-stats  → 전략별 성과 통계
 //   GET /health             → 헬스체크
 //   GET /metrics            → Prometheus metrics (no auth)
 // ============================================================================
@@ -49,6 +50,7 @@ struct DashboardCallbacks {
     std::function<nlohmann::json()> get_learner;
     std::function<nlohmann::json()> get_learner_summary;
     std::function<nlohmann::json()> get_tf_stats;
+    std::function<nlohmann::json()> get_strategy_stats;
 };
 
 // Simple per-IP rate limiter: max requests per window
@@ -117,10 +119,10 @@ public:
             m_static_dir_canonical = std::filesystem::absolute(m_static_dir).string();
         }
 
-        // Auth: use provided token, or warn and use a default
+        // Auth: require explicit token — refuse to start with defaults in non-shadow mode
         if (auth_token.empty()) {
-            m_auth_token = "admin:changeme";
-            spdlog::warn("[Dashboard] No dashboard_token configured! Using default credentials (admin:changeme). CHANGE THIS!");
+            m_auth_token = "admin:" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+            spdlog::error("[Dashboard] No dashboard_token configured! Generated random token. Set dashboard_token in config!");
         } else {
             m_auth_token = auth_token;
         }
@@ -189,9 +191,9 @@ private:
             http::request<http::string_body> req;
             http::read(socket, buffer, req);
 
-            // Basic Auth check (skip for health endpoint)
+            // Basic Auth check (only skip for health endpoint)
             auto target = std::string(req.target());
-            if (target != "/" && target != "/health" && target != "/metrics") {
+            if (target != "/health") {
                 if (!check_auth(req)) {
                     http::response<http::string_body> res{http::status::unauthorized, req.version()};
                     res.set(http::field::content_type, "application/json");
@@ -291,6 +293,13 @@ private:
                         m_cb.get_learner_summary().dump());
                 }
                 return make_response(http::status::ok, "{}");
+            }
+            if (target == "/api/strategy-stats") {
+                if (m_cb.get_strategy_stats) {
+                    return make_response(http::status::ok,
+                        m_cb.get_strategy_stats().dump());
+                }
+                return make_response(http::status::ok, "[]");
             }
             if (target == "/health") {
                 return make_response(http::status::ok,

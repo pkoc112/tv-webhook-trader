@@ -15,6 +15,8 @@
 #include <vector>
 #include <cmath>
 #include <optional>
+#include <algorithm>
+#include <unordered_map>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
@@ -61,7 +63,8 @@ public:
 
     void record_trade(const std::string& symbol, const std::string& timeframe,
                       const std::string& exit_reason, double entry_price,
-                      double exit_price, double quantity, double pnl, double fee) {
+                      double exit_price, double quantity, double pnl, double fee,
+                      const std::string& strategy = "unknown") {
         TradeRecord tr;
         tr.symbol      = symbol;
         tr.timeframe   = timeframe;
@@ -71,6 +74,7 @@ public:
         tr.quantity    = quantity;
         tr.pnl         = pnl;
         tr.fee         = fee;
+        tr.strategy    = strategy;
         m_trades.push_back(tr);
         m_learner.record_trade(tr);
         cap_trades();
@@ -90,7 +94,7 @@ public:
         double pnl = calc_pnl(pos.side, pos.entry_price, exit_price, close_qty, pos.leverage) - fee;
 
         record_trade(pos.symbol, pos.timeframe, exit_reason,
-                     pos.entry_price, exit_price, close_qty, pnl, fee);
+                     pos.entry_price, exit_price, close_qty, pnl, fee, pos.strategy);
         return pnl;
     }
 
@@ -108,7 +112,7 @@ public:
         }
 
         record_trade(pos.symbol, pos.timeframe, "WS_CLOSE",
-                     pos.entry_price, exit_price, pos.quantity, pnl, fee);
+                     pos.entry_price, exit_price, pos.quantity, pnl, fee, pos.strategy);
         return pnl;
     }
 
@@ -147,6 +151,49 @@ public:
             {"risk_skips", risk_skips},
             {"shadow_mode", shadow_mode}
         };
+    }
+
+    // ── Strategy performance stats (thread-safe) ──
+
+    [[nodiscard]] nlohmann::json get_strategy_stats() const {
+        std::lock_guard lock(m_pos_mtx);
+        struct StratStats {
+            int total{0};
+            int wins{0};
+            double total_pnl{0.0};
+            double total_fee{0.0};
+        };
+        std::unordered_map<std::string, StratStats> by_strategy;
+
+        for (auto& t : m_trades) {
+            auto& s = by_strategy[t.strategy];
+            s.total++;
+            if (t.pnl > 0) s.wins++;
+            s.total_pnl += t.pnl;
+            s.total_fee += t.fee;
+        }
+
+        auto arr = nlohmann::json::array();
+        for (auto& [name, s] : by_strategy) {
+            double wr = s.total > 0 ? std::round(static_cast<double>(s.wins) / s.total * 10000.0) / 100.0 : 0.0;
+            arr.push_back(nlohmann::json{
+                {"strategy", name},
+                {"total_trades", s.total},
+                {"wins", s.wins},
+                {"losses", s.total - s.wins},
+                {"win_rate", wr},
+                {"total_pnl", std::round(s.total_pnl * 10000.0) / 10000.0},
+                {"total_fee", std::round(s.total_fee * 10000.0) / 10000.0},
+                {"avg_pnl", s.total > 0 ? std::round(s.total_pnl / s.total * 10000.0) / 10000.0 : 0.0}
+            });
+        }
+
+        // Sort by total_pnl ascending (worst strategies first)
+        std::sort(arr.begin(), arr.end(), [](const nlohmann::json& a, const nlohmann::json& b) {
+            return a["total_pnl"].get<double>() < b["total_pnl"].get<double>();
+        });
+
+        return arr;
     }
 
     // ── Alert helpers ──

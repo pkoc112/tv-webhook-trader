@@ -29,6 +29,7 @@ struct ManagedPosition {
     double sl_price{0.0};
     double tp1_price{0.0};
     std::string tier;
+    std::string strategy{"unknown"};
     std::chrono::system_clock::time_point opened_at;
 };
 
@@ -83,6 +84,8 @@ public:
     explicit PortfolioRiskManager(const nlohmann::json& config) {
         auto cfg = config.value("portfolio_risk", nlohmann::json::object());
         m_max_pos_total = cfg.value("max_positions_total", 50);
+        m_max_concurrent = cfg.value("max_concurrent_positions", 15);
+        m_max_same_direction = cfg.value("max_same_direction", 10);
 
         if (cfg.contains("max_positions_per_tf")) {
             for (auto& [k, v] : cfg["max_positions_per_tf"].items())
@@ -188,8 +191,32 @@ public:
             }
         }
 
-        // 2. 총 포지션 수
+        // 2a. HARD concurrent position limit (primary defense against over-exposure)
         int total_pos = static_cast<int>(positions.size());
+        if (total_pos >= m_max_concurrent) {
+            return block("max_concurrent_positions",
+                "HARD LIMIT: " + std::to_string(total_pos) + "/" + std::to_string(m_max_concurrent)
+                + " concurrent positions (balance protection)");
+        }
+
+        // 2b. Same-direction concentration limit
+        {
+            bool is_long_entry = (side == "long" || side == "buy");
+            std::string dir = is_long_entry ? "long" : "short";
+            int same_dir_count = 0;
+            for (auto& [_, p] : positions) {
+                bool p_is_long = (p.side == "long" || p.side == "buy");
+                if ((is_long_entry && p_is_long) || (!is_long_entry && !p_is_long))
+                    same_dir_count++;
+            }
+            if (same_dir_count >= m_max_same_direction) {
+                return block("max_same_direction",
+                    dir + " concentration: " + std::to_string(same_dir_count)
+                    + "/" + std::to_string(m_max_same_direction) + " (directional risk limit)");
+            }
+        }
+
+        // 2c. Legacy total positions cap (soft ceiling, should be >= max_concurrent)
         if (total_pos >= m_max_pos_total) {
             return block("max_positions",
                 "Max positions: " + std::to_string(total_pos) + "/" + std::to_string(m_max_pos_total));
@@ -401,6 +428,8 @@ private:
 
     // Config
     int    m_max_pos_total{50};
+    int    m_max_concurrent{15};       // HARD limit on total open positions
+    int    m_max_same_direction{10};   // Max positions in same direction (long/short)
     std::unordered_map<std::string, int>    m_max_pos_per_tf;
     std::unordered_map<std::string, double> m_tf_exposure_pct;
     double m_corr_factor{0.7};

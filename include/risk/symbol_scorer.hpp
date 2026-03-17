@@ -36,6 +36,7 @@ struct TradeRecord {
     double entry_price{0.0};
     double exit_price{0.0};
     double quantity{0.0};
+    std::string strategy{"unknown"};
 };
 
 inline void from_json(const nlohmann::json& j, TradeRecord& t) {
@@ -47,6 +48,7 @@ inline void from_json(const nlohmann::json& j, TradeRecord& t) {
     t.entry_price = j.value("entry_price", 0.0);
     t.exit_price  = j.value("exit_price", 0.0);
     t.quantity    = j.value("quantity", 0.0);
+    t.strategy    = j.value("strategy", std::string("unknown"));
 }
 
 // -- TF별 서브 점수 --

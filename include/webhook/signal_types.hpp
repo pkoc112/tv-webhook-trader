@@ -75,6 +75,9 @@ struct WebhookSignal {
     double      sl{0.0};
     std::string token;
 
+    // -- 전략/시그널 소스 추적 --
+    std::string strategy_name{"unknown"};
+
     // -- 수신 시각 --
     Timestamp   received_at{0};
 
@@ -245,7 +248,7 @@ struct WebhookSignal {
         if (has_tp2()) s += fmt::format(" TP2={:.2f}", tp2);
         if (has_tp3()) s += fmt::format(" TP3={:.2f}", tp3);
         if (has_sl())  s += fmt::format(" SL={:.2f}", sl);
-        s += fmt::format(" dir={} rating={} tf={}", signal_direction, current_rating, timeframe);
+        s += fmt::format(" dir={} rating={} tf={} strat={}", signal_direction, current_rating, timeframe, strategy_name);
         return s;
     }
 
@@ -318,6 +321,9 @@ private:
         // 인증 토큰
         sig.token = j.value("token", j.value("secret", ""));
 
+        // 전략/시그널 소스 추적
+        sig.strategy_name = j.value("strategy", j.value("alert_name", "unknown"));
+
         // -- 시그널 종류 판별 --
         auto alert_upper = to_upper(sig.alert);
 
@@ -372,6 +378,7 @@ private:
         sig.tp1        = j.value("tp", j.value("tp1", 0.0));
         sig.sl         = j.value("sl", 0.0);
         sig.token      = j.value("token", j.value("secret", ""));
+        sig.strategy_name = j.value("strategy", j.value("alert_name", "unknown"));
         sig.sig_type   = SignalType::Entry;
 
         if (sig.price == 0.0 && j.contains("price") && j["price"].is_string()) {

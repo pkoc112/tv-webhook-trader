@@ -27,17 +27,17 @@
     "position_sizing": {
         "method": "dynamic_balance_pct",
         "kelly_fraction": 0.25,
-        "max_risk_per_trade_pct": 5.0,
+        "max_risk_per_trade_pct": 2.0,
         "min_trade_usdt": 5.0,
-        "max_trade_usdt": 100.0,
-        "base_trade_pct": 30.0,
-        "max_trade_pct": 50.0,
+        "max_trade_usdt": 50.0,
+        "base_trade_pct": 3.0,
+        "max_trade_pct": 8.0,
         "drawdown_levels": [
-            {"threshold": 10.0,  "multiplier": 1.0},
-            {"threshold": 20.0,  "multiplier": 0.75},
-            {"threshold": 30.0,  "multiplier": 0.50},
-            {"threshold": 50.0,  "multiplier": 0.25},
-            {"threshold": 100.0, "multiplier": 0.0}
+            {"threshold": 3.0,   "multiplier": 1.0},
+            {"threshold": 5.0,   "multiplier": 0.75},
+            {"threshold": 8.0,   "multiplier": 0.50},
+            {"threshold": 12.0,  "multiplier": 0.25},
+            {"threshold": 20.0,  "multiplier": 0.0}
         ]
     },
 
@@ -61,16 +61,18 @@
     },
 
     "portfolio_risk": {
-        "max_positions_total": 100,
+        "max_concurrent_positions": 15,
+        "max_same_direction": 10,
+        "max_positions_total": 20,
         "max_positions_per_tf": {
-            "1": 25, "5": 30, "15": 30, "30": 25, "60": 20, "240": 10
+            "1": 5, "5": 8, "15": 8, "30": 6, "60": 5, "240": 3
         },
         "tf_exposure_pct": {
-            "1": 25, "5": 40, "15": 40, "30": 35, "60": 30, "240": 20
+            "1": 15, "5": 25, "15": 25, "30": 20, "60": 20, "240": 15
         },
         "correlation_factor": 0.7,
-        "max_correlated_risk_pct": 80.0,
-        "max_margin_usage_pct": 90.0,
+        "max_correlated_risk_pct": 50.0,
+        "max_margin_usage_pct": 80.0,
         "rapid_loss_window_minutes": 10,
         "rapid_loss_pct": 2.0,
         "circuit_breaker": {

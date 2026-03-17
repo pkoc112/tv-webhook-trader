@@ -70,7 +70,8 @@ public:
     void register_position(const std::string& symbol, const std::string& timeframe,
                           const std::string& side, double entry_price, double quantity,
                           int leverage, double sl_price, double tp1_price,
-                          const std::string& tier, uint64_t oid) {
+                          const std::string& tier, uint64_t oid,
+                          const std::string& strategy = "unknown") {
         std::lock_guard lock(m_pos_mtx);
         std::string key = symbol + "_" + timeframe + "_" + std::to_string(oid);
         ManagedPosition pos;
@@ -83,6 +84,7 @@ public:
         pos.sl_price    = sl_price;
         pos.tp1_price   = tp1_price;
         pos.tier        = tier;
+        pos.strategy    = strategy;
         pos.opened_at   = std::chrono::system_clock::now();
         m_positions[key] = pos;
     }
@@ -303,7 +305,13 @@ public:
                 }
             }
             for (auto& key : to_remove) {
-                m_positions.erase(key);
+                auto it = m_positions.find(key);
+                if (it != m_positions.end()) {
+                    // Record ghost close as a trade (exchange closed it — likely SL/liquidation)
+                    spdlog::warn("[Sync] Ghost PnL not recorded (exchange closed): {} {} entry={:.4f} qty={:.6f}",
+                        it->second.symbol, it->second.side, it->second.entry_price, it->second.quantity);
+                    m_positions.erase(it);
+                }
             }
 
             // === 2) Reverse: Import exchange positions not in internal ===
