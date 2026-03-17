@@ -63,8 +63,15 @@ def api_request(method, path, body=None, keys=None):
         return json.loads(resp.read().decode())
     except HTTPError as e:
         err_body = e.read().decode() if e.fp else str(e)
-        print(f"  HTTP {e.code}: {err_body}")
-        return {"code": str(e.code), "msg": err_body}
+        # Bitget returns error details in JSON body even on HTTP 400
+        try:
+            err_json = json.loads(err_body)
+            bitget_code = err_json.get("code", str(e.code))
+            print(f"  HTTP {e.code}: {err_body}")
+            return {"code": bitget_code, "msg": err_json.get("msg", err_body)}
+        except (json.JSONDecodeError, ValueError):
+            print(f"  HTTP {e.code}: {err_body}")
+            return {"code": str(e.code), "msg": err_body}
 
 # ─── Contract Info ───
 def fetch_contracts(keys):
