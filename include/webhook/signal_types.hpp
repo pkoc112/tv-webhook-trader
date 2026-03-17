@@ -346,13 +346,14 @@ private:
             if (sig.signal_direction == "bull") sig.action = "sell";       // 롱 청산
             else if (sig.signal_direction == "bear") sig.action = "buy";   // 숏 청산
         } else if (alert_upper == "SL" || alert_upper == "STOP_LOSS" ||
-                   alert_upper == "STOPLOSS" || alert_upper == "AUTO_SL") {
+                   alert_upper == "STOP-LOSS" || alert_upper == "STOPLOSS" ||
+                   alert_upper == "AUTO_SL" || alert_upper == "AUTO-SL") {
             sig.sig_type = SignalType::SL;
             sig.trade_side = "close";
             if (sig.signal_direction == "bull") sig.action = "sell";
             else if (sig.signal_direction == "bear") sig.action = "buy";
         } else if (alert_upper == "RE" || alert_upper == "RE_ENTRY" ||
-                   alert_upper == "REENTRY") {
+                   alert_upper == "RE-ENTRY" || alert_upper == "REENTRY") {
             sig.sig_type = SignalType::ReEntry;
             sig.action = (sig.signal_direction == "bull") ? "buy" : "sell";
             sig.trade_side = "open";
