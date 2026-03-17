@@ -191,9 +191,11 @@ private:
             http::request<http::string_body> req;
             http::read(socket, buffer, req);
 
-            // Basic Auth check (only skip for health endpoint)
+            // Basic Auth check (skip for health + HTML pages that have their own login form)
             auto target = std::string(req.target());
-            if (target != "/health") {
+            bool is_public = (target == "/health" || target == "/" || target == "/index.html"
+                || target == "/dashboard.html" || target == "/learning.html" || target == "/learning");
+            if (!is_public) {
                 if (!check_auth(req)) {
                     http::response<http::string_body> res{http::status::unauthorized, req.version()};
                     res.set(http::field::content_type, "application/json");
