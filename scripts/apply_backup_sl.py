@@ -178,7 +178,8 @@ def _do_place_tpsl(keys, symbol, trigger_str, hold_side, size, dry_run):
         print(f"  [FAIL] {symbol}: code={code} msg={resp.get('msg', 'unknown')}")
         return False, code
 
-def place_tpsl_order(keys, symbol, trigger_price, hold_side, size, contracts, dry_run=True):
+def place_tpsl_order(keys, symbol, trigger_price, hold_side, size, contracts,
+                     mark_price=0, dry_run=True):
     """SL 트리거 주문 설정 (실패 시 마크 가격 기준 재시도)"""
     ci = contracts.get(symbol, {})
     pp = ci.get("pricePlace", 4)
@@ -195,29 +196,34 @@ def place_tpsl_order(keys, symbol, trigger_price, hold_side, size, contracts, dr
     if ok:
         return True
 
-    # 실패 code 45122: "stop loss price > mark price" → 이미 3% 이상 손실
-    # 마크 가격 기준 5%로 재시도 (추가 손실 방어)
-    if code == "45122":
-        print(f"    ↳ 이미 entry+3% 초과 손실. 마크 가격 기준 5%로 재시도...")
-        if not dry_run:
-            time.sleep(0.25)
-        mark = get_mark_price(keys, symbol)
-        if mark <= 0:
-            print(f"    ↳ 마크 가격 조회 실패")
-            return False
-
+    # 실패 code 45122/40917: SL이 현재가 잘못된 쪽에 있음 → 마크 가격 기준 5% 재시도
+    if code in ("45122", "40917") and mark_price > 0:
         FALLBACK_PCT = 0.05  # 5% from current mark price
         if hold_side == "long":
-            fallback_sl = round_price_down(mark * (1.0 - FALLBACK_PCT), pp, pes)
+            fallback_sl = round_price_down(mark_price * (1.0 - FALLBACK_PCT), pp, pes)
         else:
-            fallback_sl = round_price_up(mark * (1.0 + FALLBACK_PCT), pp, pes)
+            fallback_sl = round_price_up(mark_price * (1.0 + FALLBACK_PCT), pp, pes)
         fallback_str = f"{fallback_sl:.{pp}f}"
 
-        print(f"    ↳ mark={mark:.6f} → fallback SL={fallback_str} (5% from mark)")
+        print(f"    ↳ entry SL 실패 (이미 초과). mark={mark_price:.6f} → fallback SL={fallback_str} (5%)")
         if not dry_run:
             time.sleep(0.25)
-        ok2, _ = _do_place_tpsl(keys, symbol, fallback_str, hold_side, size, dry_run)
-        return ok2
+        ok2, code2 = _do_place_tpsl(keys, symbol, fallback_str, hold_side, size, dry_run)
+        if ok2:
+            return True
+        # 5%로도 실패 → 10%로 최종 시도
+        if code2 in ("45122", "40917"):
+            LAST_PCT = 0.10
+            if hold_side == "long":
+                last_sl = round_price_down(mark_price * (1.0 - LAST_PCT), pp, pes)
+            else:
+                last_sl = round_price_up(mark_price * (1.0 + LAST_PCT), pp, pes)
+            last_str = f"{last_sl:.{pp}f}"
+            print(f"    ↳ 5% 재시도도 실패. mark={mark_price:.6f} → last SL={last_str} (10%)")
+            if not dry_run:
+                time.sleep(0.25)
+            ok3, _ = _do_place_tpsl(keys, symbol, last_str, hold_side, size, dry_run)
+            return ok3
 
     return False
 
@@ -281,6 +287,8 @@ def main():
         size = float(size_str) if size_str else 0
         avg_price_str = pos.get("openPriceAvg", pos.get("averageOpenPrice", "0"))
         avg_price = float(avg_price_str) if avg_price_str else 0
+        mark_price_str = pos.get("markPrice", "0")
+        mark_price = float(mark_price_str) if mark_price_str else 0
         unrealized_pnl = float(pos.get("unrealizedPL", 0))
 
         if size <= 0 or avg_price <= 0:
@@ -306,7 +314,8 @@ def main():
         if not dry_run:
             time.sleep(0.25)
 
-        ok = place_tpsl_order(keys, symbol, sl_price, hold_side, size, contracts, dry_run=dry_run)
+        ok = place_tpsl_order(keys, symbol, sl_price, hold_side, size, contracts,
+                              mark_price=mark_price, dry_run=dry_run)
         if ok:
             applied += 1
         else:
