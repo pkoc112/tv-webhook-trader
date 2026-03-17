@@ -346,6 +346,11 @@ int main(int argc, char* argv[]) {
                 int count = exec_engine.import_trades(records);
                 return {{"imported", count}, {"total_submitted", static_cast<int>(records.size())}, {"status", "ok"}};
             },
+            // ── Shadow Tracker 콜백 (학습 전용 가상 추적) ──
+            .get_shadow_stats = [&exec_engine]() { return exec_engine.get_shadow_stats(); },
+            .get_shadow_positions = [&exec_engine]() { return exec_engine.get_shadow_positions(); },
+            .get_shadow_trades = [&exec_engine]() { return exec_engine.get_shadow_trades(); },
+            .get_shadow_symbol_report = [&exec_engine]() { return exec_engine.get_shadow_symbol_report(); },
             // ── Spot 전용 콜백 (선물과 완전 분리) ──
             .get_spot_stats = [&exec_engine]() { return exec_engine.get_spot_stats(); },
             .get_spot_positions = [&exec_engine]() {

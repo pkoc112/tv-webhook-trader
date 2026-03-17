@@ -52,6 +52,7 @@
 #include "risk/symbol_learner.hpp"
 #include "execution/position_manager.hpp"
 #include "execution/trade_recorder.hpp"
+#include "execution/shadow_tracker.hpp"
 
 namespace hft {
 
@@ -122,6 +123,7 @@ public:
         , m_state(cfg.state_store)
         , m_alerts(cfg.alerts)
         , m_learner(cfg.learner)
+        , m_shadow(cfg.learner)
         , m_trading(cfg.trading_config)
         , m_order_limiter(m_trading.order_rate_limit)
         , m_tpsl_limiter(m_trading.tpsl_rate_limit)
@@ -352,6 +354,20 @@ public:
         return m_trade_rec.snapshot();
     }
 
+    // ── Shadow Tracker 접근자 (학습 가상 추적 데이터) ──
+    [[nodiscard]] nlohmann::json get_shadow_stats() const {
+        return m_shadow.get_stats_json();
+    }
+    [[nodiscard]] nlohmann::json get_shadow_positions() const {
+        return m_shadow.get_positions_json();
+    }
+    [[nodiscard]] nlohmann::json get_shadow_trades() const {
+        return m_shadow.get_trades_json(200);
+    }
+    [[nodiscard]] nlohmann::json get_shadow_symbol_report() const {
+        return m_shadow.get_symbol_report();
+    }
+
     // ── Strategy performance stats for identifying bad signals ──
     [[nodiscard]] nlohmann::json get_strategy_stats() const {
         return m_trade_rec.get_strategy_stats();
@@ -568,6 +584,9 @@ private:
                     std::memory_order_relaxed);
 
                 spdlog::info("[Periodic] Position sync + balance refresh done (interval={}s)", SYNC_INTERVAL_SEC);
+
+                // Shadow tracker 상태 저장
+                m_shadow.save_state();
             } catch (const std::exception& e) {
                 spdlog::warn("[Periodic] Sync failed: {}", e.what());
             }
@@ -605,6 +624,10 @@ private:
         spdlog::info("[Worker-{}] {} {} {} @ {:.2f} strat={} (lat: {:.1f}ms)",
             wid, signal_type_str(sig.sig_type), sig.action, sig.symbol,
             sig.price, sig.strategy_name, latency_ms);
+
+        // ★ Shadow Tracker: 모든 시그널을 무조건 가상 추적 (필터 이전!)
+        // 실전 리스크와 무관하게 모든 Entry/TP/SL을 체점하여 심볼 품질 학습
+        m_shadow.track(sig);
 
         // Stale signal detection - skip signals that are too old
         {
@@ -1512,6 +1535,7 @@ private:
     StatePersistence& m_state;
     AlertManager& m_alerts;
     SymbolLearner& m_learner;
+    ShadowTracker m_shadow;   // 모든 시그널 가상 추적 (실전과 분리)
     TradingConfig m_trading;
 
     RateLimiter m_order_limiter;

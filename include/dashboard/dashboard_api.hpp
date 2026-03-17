@@ -53,6 +53,12 @@ struct DashboardCallbacks {
     std::function<nlohmann::json()> get_strategy_stats;
     std::function<nlohmann::json(const nlohmann::json&)> import_trades;
 
+    // ── Shadow Tracker 콜백 (학습 전용 가상 추적) ──
+    std::function<nlohmann::json()> get_shadow_stats;
+    std::function<nlohmann::json()> get_shadow_positions;
+    std::function<nlohmann::json()> get_shadow_trades;
+    std::function<nlohmann::json()> get_shadow_symbol_report;
+
     // ── Spot 전용 콜백 (선물과 완전 분리) ──
     std::function<nlohmann::json()> get_spot_stats;
     std::function<nlohmann::json()> get_spot_positions;
@@ -307,6 +313,35 @@ private:
                 if (m_cb.get_strategy_stats) {
                     return make_response(http::status::ok,
                         m_cb.get_strategy_stats().dump());
+                }
+                return make_response(http::status::ok, "[]");
+            }
+            // ── Shadow Tracker API (학습 전용 가상 추적) ──
+            if (target == "/api/shadow/stats") {
+                if (m_cb.get_shadow_stats) {
+                    return make_response(http::status::ok,
+                        m_cb.get_shadow_stats().dump());
+                }
+                return make_response(http::status::ok, "{}");
+            }
+            if (target == "/api/shadow/positions") {
+                if (m_cb.get_shadow_positions) {
+                    return make_response(http::status::ok,
+                        m_cb.get_shadow_positions().dump());
+                }
+                return make_response(http::status::ok, "[]");
+            }
+            if (target == "/api/shadow/trades") {
+                if (m_cb.get_shadow_trades) {
+                    return make_response(http::status::ok,
+                        m_cb.get_shadow_trades().dump());
+                }
+                return make_response(http::status::ok, "[]");
+            }
+            if (target == "/api/shadow/symbols") {
+                if (m_cb.get_shadow_symbol_report) {
+                    return make_response(http::status::ok,
+                        m_cb.get_shadow_symbol_report().dump());
                 }
                 return make_response(http::status::ok, "[]");
             }
