@@ -427,7 +427,7 @@ tr:hover { background: var(--bg-card-hover); }
         <div class="card-title">Shadow 최근 거래 <span id="shTradeCount" style="color:var(--text-muted);font-weight:400">(0)</span></div>
         <div class="table-scroll-lg">
             <table>
-                <thead><tr><th>심볼</th><th>TF</th><th>진입가</th><th>청산가</th><th>PnL</th><th>수수료</th><th>사유</th></tr></thead>
+                <thead><tr><th>심볼</th><th>방향</th><th>TF</th><th>진입가</th><th>청산가</th><th>PnL</th><th>수수료</th><th>사유</th></tr></thead>
                 <tbody id="shTradesBody"></tbody>
             </table>
         </div>
@@ -837,15 +837,18 @@ function renderShadowTracker() {
     const trBody = document.getElementById('shTradesBody');
     document.getElementById('shTradeCount').textContent = `(${shadowTrades.length})`;
     if (shadowTrades.length === 0) {
-        trBody.innerHTML = '<tr><td colspan="7" class="empty-state">아직 거래 없음</td></tr>';
+        trBody.innerHTML = '<tr><td colspan="8" class="empty-state">아직 거래 없음</td></tr>';
     } else {
         // Show most recent first
         const reversed = [...shadowTrades].reverse();
         trBody.innerHTML = reversed.map(t => {
             const reason = (t.exit_reason||'').replace('SHADOW_','');
             const reasonColor = reason === 'TP' ? 'var(--green)' : reason === 'SL' ? 'var(--red)' : 'var(--yellow)';
+            const sideStr = (t.side||'').toUpperCase();
+            const sideColor = t.side === 'long' ? 'var(--green)' : t.side === 'short' ? 'var(--red)' : 'var(--text-muted)';
             return `<tr>
                 <td style="font-weight:600">${(t.symbol||'').replace('USDT','')}</td>
+                <td style="color:${sideColor};font-weight:600">${sideStr || '-'}</td>
                 <td>${t.timeframe || '-'}</td>
                 <td>${fmt(t.entry_price, 6)}</td>
                 <td>${fmt(t.exit_price, 6)}</td>

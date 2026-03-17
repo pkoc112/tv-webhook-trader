@@ -141,6 +141,7 @@ public:
             arr.push_back(nlohmann::json{
                 {"symbol", t.symbol},
                 {"timeframe", t.timeframe},
+                {"side", t.market_type},  // shadow trades: side stored in market_type
                 {"entry_price", t.entry_price},
                 {"exit_price", t.exit_price},
                 {"pnl", std::round(t.pnl * 10000.0) / 10000.0},
@@ -360,6 +361,7 @@ private:
         tr.pnl         = pnl;
         tr.fee         = fee;
         tr.strategy    = vp.strategy;
+        tr.market_type = vp.side;  // shadow trades: side 정보를 market_type에 저장
 
         // 통계 업데이트
         if (pnl > 0) m_wins++;
@@ -430,6 +432,7 @@ private:
                 auto& t = m_trades[i];
                 tr_arr.push_back(nlohmann::json{
                     {"symbol", t.symbol}, {"timeframe", t.timeframe},
+                    {"side", t.market_type},  // shadow: side info
                     {"entry_price", t.entry_price}, {"exit_price", t.exit_price},
                     {"quantity", t.quantity}, {"pnl", t.pnl}, {"fee", t.fee},
                     {"exit_reason", t.exit_reason}, {"strategy", t.strategy}
@@ -502,6 +505,7 @@ private:
                     tr.fee         = t.value("fee", 0.0);
                     tr.exit_reason = t.value("exit_reason", "");
                     tr.strategy    = t.value("strategy", "unknown");
+                    tr.market_type = t.value("side", "");  // shadow: side info
                     m_trades.push_back(tr);
                 }
             }
