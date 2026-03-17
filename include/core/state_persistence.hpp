@@ -64,7 +64,8 @@ public:
                     {"quantity", p.quantity}, {"leverage", p.leverage},
                     {"sl_price", p.sl_price}, {"tp1_price", p.tp1_price},
                     {"tier", p.tier}, {"strategy", p.strategy},
-                    {"is_real", p.is_real}
+                    {"is_real", p.is_real},
+                    {"exchange", p.exchange}, {"market_type", p.market_type}
                 };
             }
 
@@ -79,7 +80,8 @@ public:
                     {"exit_reason", t.exit_reason},
                     {"pnl", t.pnl}, {"fee", t.fee},
                     {"entry_price", t.entry_price}, {"exit_price", t.exit_price},
-                    {"quantity", t.quantity}, {"strategy", t.strategy}
+                    {"quantity", t.quantity}, {"strategy", t.strategy},
+                    {"exchange", t.exchange}, {"market_type", t.market_type}
                 });
             }
 
@@ -162,6 +164,8 @@ private:
                     p.tier        = pj.value("tier", "C");
                     p.strategy    = pj.value("strategy", std::string("unknown"));
                     p.is_real     = pj.value("is_real", false);
+                    p.exchange    = pj.value("exchange", std::string("bitget"));
+                    p.market_type = pj.value("market_type", std::string("futures"));
                     result.positions[key] = p;
                 }
             }

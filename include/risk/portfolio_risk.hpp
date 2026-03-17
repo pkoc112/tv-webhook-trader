@@ -32,6 +32,8 @@ struct ManagedPosition {
     std::string strategy{"unknown"};
     std::chrono::system_clock::time_point opened_at;
     bool   is_real{false};   // true=거래소 실제 포지션, false=shadow/paper
+    std::string exchange{"bitget"};     // "bitget" / "upbit"
+    std::string market_type{"futures"}; // "futures" / "spot"
 };
 
 struct RiskDecision {

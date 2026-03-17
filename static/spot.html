@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Upbit Spot Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
+<style>
+:root {
+    --bg-primary: #0a0e17;
+    --bg-secondary: #111827;
+    --bg-card: #1a2332;
+    --bg-card-hover: #1e2a3a;
+    --border: #2a3444;
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --green: #10b981;
+    --green-dim: #065f46;
+    --green-bg: rgba(16, 185, 129, 0.1);
+    --red: #ef4444;
+    --red-dim: #7f1d1d;
+    --red-bg: rgba(239, 68, 68, 0.1);
+    --blue: #3b82f6;
+    --blue-bg: rgba(59, 130, 246, 0.1);
+    --yellow: #f59e0b;
+    --yellow-bg: rgba(245, 158, 11, 0.1);
+    --purple: #a78bfa;
+    --orange: #f97316;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--bg-primary); color: var(--text-primary); font-family: 'Noto Sans KR', sans-serif; }
+.header {
+    background: var(--bg-secondary); border-bottom: 1px solid var(--border);
+    padding: 16px 24px; display: flex; align-items: center; justify-content: space-between;
+}
+.header h1 { font-size: 20px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+.header-left { display: flex; align-items: center; gap: 16px; }
+.header-right { display: flex; align-items: center; gap: 12px; }
+.mode-badge { font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 4px 10px; border-radius: 4px; font-weight: 600; }
+.mode-shadow { background: rgba(249,115,22,0.2); color: var(--orange); border: 1px solid rgba(249,115,22,0.4); }
+.mode-live { background: rgba(16,185,129,0.2); color: var(--green); border: 1px solid rgba(16,185,129,0.4); }
+.btn {
+    font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 6px 14px;
+    border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card);
+    color: var(--text-secondary); cursor: pointer; transition: all 0.2s;
+}
+.btn:hover { background: var(--bg-card-hover); color: var(--text-primary); }
+.container { max-width: 1600px; margin: 20px auto; padding: 0 24px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.stat-card {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 18px;
+}
+.stat-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.stat-value { font-family: 'JetBrains Mono', monospace; font-size: 24px; font-weight: 700; }
+.section { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+.section-title { font-size: 14px; font-weight: 600; color: var(--text-secondary); margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+table { width: 100%; border-collapse: collapse; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+th { text-align: left; color: var(--text-muted); font-size: 10px; text-transform: uppercase; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+td { padding: 10px 12px; border-bottom: 1px solid rgba(42,52,68,0.5); color: var(--text-secondary); }
+tr:hover td { background: var(--bg-card-hover); }
+.pnl-pos { color: var(--green); }
+.pnl-neg { color: var(--red); }
+.exchange-badge { font-size: 10px; padding: 2px 6px; border-radius: 3px; font-weight: 600; }
+.exchange-upbit { background: rgba(59,130,246,0.2); color: var(--blue); }
+.exchange-bitget { background: rgba(249,115,22,0.2); color: var(--orange); }
+.market-badge { font-size: 10px; padding: 2px 6px; border-radius: 3px; font-weight: 600; }
+.market-spot { background: rgba(139,92,246,0.2); color: var(--purple); }
+.market-futures { background: rgba(245,158,11,0.2); color: var(--yellow); }
+.empty-state { text-align: center; padding: 40px; color: var(--text-muted); font-size: 13px; }
+.login-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: var(--bg-primary); z-index: 1000;
+    display: flex; align-items: center; justify-content: center;
+}
+.login-box {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 32px; width: 340px; text-align: center;
+}
+.login-box h2 { font-size: 18px; margin-bottom: 20px; font-family: 'JetBrains Mono', monospace; }
+.login-box input {
+    width: 100%; padding: 10px; margin-bottom: 12px;
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--text-primary); font-size: 13px;
+}
+.login-box button { width: 100%; padding: 10px; background: var(--blue); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; }
+.nav-pills { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+.nav-pill {
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 6px 14px;
+    border: 1px solid var(--border); border-radius: 20px; background: var(--bg-secondary);
+    color: var(--text-muted); cursor: pointer; text-decoration: none; transition: all 0.2s;
+}
+.nav-pill:hover { color: var(--text-primary); border-color: var(--text-muted); }
+.nav-pill.active { background: var(--blue); color: white; border-color: var(--blue); }
+</style>
+</head>
+<body>
+
+<div id="loginOverlay" class="login-overlay">
+<div class="login-box">
+    <h2>Upbit Spot Dashboard</h2>
+    <input type="text" id="loginUser" placeholder="Username">
+    <input type="password" id="loginPass" placeholder="Password">
+    <button onclick="doLogin()">Login</button>
+</div>
+</div>
+
+<div id="mainContent" style="display:none">
+<div class="header">
+    <div class="header-left">
+        <h1>Upbit Spot</h1>
+        <span class="mode-badge mode-shadow">SHADOW LEARNING</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted)">Paper Trading</span>
+    </div>
+    <div class="header-right">
+        <span style="font-size:11px;color:var(--text-muted);font-family:'JetBrains Mono',monospace" id="lastUpdate">...</span>
+        <a href="/" class="btn" style="text-decoration:none">Futures Dashboard</a>
+        <a href="/learning" class="btn" style="background:rgba(249,115,22,0.15);color:var(--orange);border-color:rgba(249,115,22,0.3);text-decoration:none">Shadow Learning</a>
+        <button class="btn" onclick="refreshAll()">새로고침</button>
+    </div>
+</div>
+
+<div class="container">
+
+<!-- Navigation Pills -->
+<div class="nav-pills">
+    <a href="/" class="nav-pill">Bitget Futures</a>
+    <a href="/learning" class="nav-pill">Shadow Learning</a>
+    <a href="/spot" class="nav-pill active">Upbit Spot</a>
+</div>
+
+<!-- Summary Stats -->
+<div class="grid" id="statsGrid">
+    <div class="stat-card">
+        <div class="stat-label">현물 포지션</div>
+        <div class="stat-value" id="spotPositions">0</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">현물 거래 수</div>
+        <div class="stat-value" id="spotTrades">0</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">현물 PnL (KRW)</div>
+        <div class="stat-value" id="spotPnl">0</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">현물 승률</div>
+        <div class="stat-value" id="spotWinRate">-</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">심볼 수 (시그널 수신)</div>
+        <div class="stat-value" id="spotSymbols">0</div>
+    </div>
+</div>
+
+<!-- Open Spot Positions -->
+<div class="section">
+    <div class="section-title">현물 오픈 포지션 (Shadow)</div>
+    <table>
+        <thead>
+            <tr>
+                <th>거래소</th>
+                <th>심볼</th>
+                <th>TF</th>
+                <th>진입가 (KRW)</th>
+                <th>수량</th>
+                <th>투자금 (KRW)</th>
+                <th>티어</th>
+                <th>전략</th>
+            </tr>
+        </thead>
+        <tbody id="spotPositionsTable"></tbody>
+    </table>
+    <div id="spotPosEmpty" class="empty-state" style="display:none">현물 포지션이 없습니다. TradingView에서 시그널을 기다리는 중...</div>
+</div>
+
+<!-- Spot Trade History -->
+<div class="section">
+    <div class="section-title">현물 거래 기록</div>
+    <table>
+        <thead>
+            <tr>
+                <th>심볼</th>
+                <th>TF</th>
+                <th>진입가</th>
+                <th>청산가</th>
+                <th>수량</th>
+                <th>PnL</th>
+                <th>청산 이유</th>
+                <th>전략</th>
+            </tr>
+        </thead>
+        <tbody id="spotTradesTable"></tbody>
+    </table>
+    <div id="spotTradesEmpty" class="empty-state" style="display:none">거래 기록이 아직 없습니다.</div>
+</div>
+
+<!-- Symbol Performance -->
+<div class="section">
+    <div class="section-title">현물 심볼별 성과</div>
+    <table>
+        <thead>
+            <tr>
+                <th>심볼</th>
+                <th>거래 수</th>
+                <th>승/패</th>
+                <th>승률</th>
+                <th>총 PnL</th>
+                <th>평균 PnL</th>
+            </tr>
+        </thead>
+        <tbody id="spotSymbolStats"></tbody>
+    </table>
+    <div id="spotSymbolEmpty" class="empty-state" style="display:none">데이터 수집 중...</div>
+</div>
+
+</div>
+</div>
+
+<script>
+let authToken = localStorage.getItem('dashToken') || '';
+
+function doLogin() {
+    const user = document.getElementById('loginUser').value;
+    const pass = document.getElementById('loginPass').value;
+    authToken = 'Basic ' + btoa(user + ':' + pass);
+    localStorage.setItem('dashToken', authToken);
+    checkAuth();
+}
+
+async function checkAuth() {
+    try {
+        const r = await fetch('/api/stats', { headers: { 'Authorization': authToken } });
+        if (r.ok) {
+            document.getElementById('loginOverlay').style.display = 'none';
+            document.getElementById('mainContent').style.display = 'block';
+            refreshAll();
+            setInterval(refreshAll, 10000);
+        }
+    } catch (e) {}
+}
+
+async function apiFetch(url) {
+    const r = await fetch(url, { headers: { 'Authorization': authToken } });
+    if (!r.ok) throw new Error('API error ' + r.status);
+    return r.json();
+}
+
+async function refreshAll() {
+    try {
+        const [positions, stats] = await Promise.all([
+            apiFetch('/api/positions'),
+            apiFetch('/api/stats')
+        ]);
+
+        // Filter spot positions
+        const spotPos = positions.filter(p => p.market_type === 'spot');
+        renderSpotPositions(spotPos);
+
+        // Get trades for spot stats
+        try {
+            const risk = await apiFetch('/api/risk/status');
+            // Stats will be computed from positions and trades data
+        } catch (e) {}
+
+        // Compute spot-specific stats from all available data
+        updateSpotStats(spotPos);
+
+        document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('ko-KR');
+    } catch (e) {
+        console.error('Refresh failed:', e);
+    }
+}
+
+function renderSpotPositions(positions) {
+    const tbody = document.getElementById('spotPositionsTable');
+    const empty = document.getElementById('spotPosEmpty');
+
+    if (!positions.length) {
+        tbody.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+    }
+    empty.style.display = 'none';
+
+    tbody.innerHTML = positions.map(p => {
+        const investKrw = (p.entry_price * p.quantity).toFixed(0);
+        return `<tr>
+            <td><span class="exchange-badge exchange-${p.exchange || 'upbit'}">${(p.exchange || 'upbit').toUpperCase()}</span></td>
+            <td style="color:var(--text-primary);font-weight:600">${p.symbol}</td>
+            <td>${p.timeframe || '-'}</td>
+            <td>${Number(p.entry_price).toLocaleString('ko-KR')}</td>
+            <td>${Number(p.quantity).toFixed(8)}</td>
+            <td>${Number(investKrw).toLocaleString('ko-KR')}</td>
+            <td>${p.tier || '-'}</td>
+            <td>${p.strategy || '-'}</td>
+        </tr>`;
+    }).join('');
+
+    document.getElementById('spotPositions').textContent = positions.length;
+}
+
+function updateSpotStats(spotPos) {
+    document.getElementById('spotPositions').textContent = spotPos.length;
+
+    // Unique symbols
+    const uniqueSymbols = new Set(spotPos.map(p => p.symbol));
+    document.getElementById('spotSymbols').textContent = uniqueSymbols.size;
+
+    // Trade stats will be populated when we have trade data
+    // For now, show position-based data
+}
+
+// Initial auth check
+if (authToken) checkAuth();
+else document.getElementById('loginOverlay').style.display = 'flex';
+</script>
+</body>
+</html>

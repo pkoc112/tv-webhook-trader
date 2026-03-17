@@ -600,11 +600,18 @@ private:
             return;
         }
 
-        // 화이트리스트
-        if (!m_trading.allowed_symbols.empty() &&
+        // 화이트리스트 (선물만 적용 — 현물은 별도 라우팅)
+        if (sig.market_type != "spot" &&
+            !m_trading.allowed_symbols.empty() &&
             !m_trading.allowed_symbols.count(sig.symbol)) {
             spdlog::debug("[W-{}] SKIP {}: not in allowed_symbols", wid, sig.symbol);
             m_orders_skipped.fetch_add(1);
+            return;
+        }
+
+        // 현물(spot) 시그널 라우팅
+        if (sig.market_type == "spot") {
+            handle_spot_signal(wid, sig);
             return;
         }
 
@@ -1095,6 +1102,211 @@ private:
             m_alerts.critical("TRADE", "SL CLOSE FAILED " + sig.symbol + " " + hold_side +
                 " — manual intervention needed!", sig.symbol);
         }
+    }
+
+    // ── 현물(Spot) 시그널 처리 (Shadow 학습용) ──
+    void handle_spot_signal(int wid, const WebhookSignal& sig) {
+        spdlog::info("[W-{}] SPOT {} {} {} @ {:.2f} exchange={} tf={}",
+            wid, signal_type_str(sig.sig_type), sig.action, sig.symbol,
+            sig.price, sig.exchange, sig.timeframe);
+
+        switch (sig.sig_type) {
+            case SignalType::Entry:
+            case SignalType::ReEntry:
+                handle_spot_entry(wid, sig);
+                break;
+            case SignalType::TP:
+                handle_spot_tp(wid, sig);
+                break;
+            case SignalType::SL:
+                handle_spot_sl(wid, sig);
+                break;
+            default:
+                spdlog::warn("[W-{}] SPOT unknown alert: {}", wid, sig.alert);
+                break;
+        }
+    }
+
+    // ── 현물 진입: buy만 허용, sell(숏)은 무시 ──
+    void handle_spot_entry(int wid, const WebhookSignal& sig) {
+        // 현물은 매수만 가능 (숏 불가)
+        if (sig.action == "sell") {
+            spdlog::info("[W-{}] SPOT_SKIP {}: sell entry ignored (no short in spot)", wid, sig.symbol);
+            m_orders_skipped.fetch_add(1);
+            return;
+        }
+
+        if (!m_sym_locks.wait_lock(sig.symbol, std::chrono::seconds(15))) {
+            spdlog::warn("[W-{}] SPOT_SKIP {}: symbol lock timeout", wid, sig.symbol);
+            m_orders_skipped.fetch_add(1);
+            return;
+        }
+        SymbolLockGuard guard(m_sym_locks, sig.symbol);
+
+        std::string tf = sig.timeframe.empty() ? "unknown" : sig.timeframe;
+
+        // 티어 체크 (현물용 스코어는 별도 - symbol에 exchange prefix 사용)
+        std::string score_key = sig.exchange + ":" + sig.symbol;  // "upbit:WCTKRW"
+        std::string tier = m_scorer.get_tier(score_key);
+
+        // 중복 포지션 체크 (현물은 long만)
+        {
+            std::lock_guard lock(m_pos_mtx);
+            for (auto& [_, p] : m_positions) {
+                if (p.symbol == sig.symbol && p.exchange == sig.exchange && p.side == "long") {
+                    spdlog::info("[W-{}] SPOT_SKIP {}: already has position", wid, sig.symbol);
+                    m_orders_skipped.fetch_add(1);
+                    return;
+                }
+            }
+        }
+
+        // 현물 사이즈 계산 (KRW 기준, 레버리지 없음)
+        // Shadow 모드: 가상 잔고 5000 KRW 고정 (학습용)
+        double trade_krw = 5000.0;  // 심볼당 5000원
+        double qty = (sig.price > 0) ? trade_krw / sig.price : 0.0;
+
+        if (qty <= 0) {
+            spdlog::info("[W-{}] SPOT_SKIP {}: qty=0 (price={:.2f})", wid, sig.symbol, sig.price);
+            m_orders_skipped.fetch_add(1);
+            return;
+        }
+
+        // Paper 포지션 등록 (Shadow)
+        auto oid = m_next_oid.fetch_add(1);
+        spdlog::info("[SPOT_SHADOW] BUY {} qty={:.8f} @ {:.2f} KRW={:.0f} tier={} tf={}",
+            sig.symbol, qty, sig.price, trade_krw, tier, tf);
+
+        m_orders_executed.fetch_add(1);
+
+        // register_position with spot metadata
+        {
+            std::lock_guard lock(m_pos_mtx);
+            std::string key = sig.symbol + "_" + tf + "_" + std::to_string(oid);
+            ManagedPosition pos;
+            pos.symbol      = sig.symbol;
+            pos.timeframe   = tf;
+            pos.side        = "long";  // 현물은 항상 long
+            pos.entry_price = sig.price;
+            pos.quantity    = qty;
+            pos.leverage    = 1;       // 현물은 레버리지 없음
+            pos.sl_price    = sig.has_sl() ? sig.sl : 0;
+            pos.tp1_price   = sig.has_tp1() ? sig.tp1 : 0;
+            pos.tier        = tier;
+            pos.strategy    = sig.strategy_name;
+            pos.opened_at   = std::chrono::system_clock::now();
+            pos.is_real     = false;   // Shadow = paper
+            pos.exchange    = sig.exchange;
+            pos.market_type = "spot";
+            m_positions[key] = pos;
+            m_pos_mgr.save_state(m_trades, m_orders_executed.load());
+        }
+    }
+
+    // ── 현물 TP: 보유분 매도 (paper) ──
+    void handle_spot_tp(int wid, const WebhookSignal& sig) {
+        if (!m_sym_locks.wait_lock(sig.symbol, std::chrono::seconds(10))) {
+            spdlog::warn("[W-{}] SPOT_TP_SKIP {}: symbol lock timeout", wid, sig.symbol);
+            return;
+        }
+        SymbolLockGuard guard(m_sym_locks, sig.symbol);
+
+        // 매칭 포지션 찾기 (현물은 long만, 같은 거래소)
+        std::string match_key;
+        {
+            std::lock_guard lock(m_pos_mtx);
+            for (auto& [key, p] : m_positions) {
+                if (p.symbol == sig.symbol && p.exchange == sig.exchange &&
+                    p.market_type == "spot" && p.side == "long") {
+                    match_key = key;
+                    break;
+                }
+            }
+        }
+
+        if (match_key.empty()) {
+            spdlog::warn("[W-{}] SPOT_TP {} no matching position", wid, sig.symbol);
+            return;
+        }
+
+        // TP 비율
+        double close_ratio = 1.0;
+        if (sig.tp_level == "TP1")      close_ratio = 0.33;
+        else if (sig.tp_level == "TP2") close_ratio = 0.50;
+
+        std::lock_guard lock(m_pos_mtx);
+        auto* pos = m_pos_mgr.get(match_key);
+        if (!pos) return;
+
+        double close_qty = pos->quantity * close_ratio;
+        double exit_price = sig.price > 0 ? sig.price : pos->entry_price;
+
+        spdlog::info("[SPOT_SHADOW] TP {} {} qty={:.8f}/{:.8f} @ {:.2f}",
+            sig.tp_level, sig.symbol, close_qty, pos->quantity, exit_price);
+
+        if (sig.tp_level == "TP3" || close_ratio >= 0.99) {
+            double pnl = m_trade_rec.record_close(*pos, exit_price, "SPOT_" + sig.tp_level, close_qty);
+            // exchange/market_type을 TradeRecord에 반영
+            if (!m_trades.empty()) {
+                m_trades.back().exchange = sig.exchange;
+                m_trades.back().market_type = "spot";
+            }
+            m_pos_mgr.remove(match_key);
+            spdlog::info("[SPOT_SHADOW] {} {} PnL={:.4f}", sig.tp_level, sig.symbol, pnl);
+        } else {
+            double pnl = m_trade_rec.record_close(*pos, exit_price,
+                "SPOT_" + sig.tp_level + "_PARTIAL", close_qty);
+            if (!m_trades.empty()) {
+                m_trades.back().exchange = sig.exchange;
+                m_trades.back().market_type = "spot";
+            }
+            m_pos_mgr.reduce_quantity(match_key, close_qty);
+            spdlog::info("[SPOT_SHADOW] {} {} PnL={:.4f} ({:.0f}%)",
+                sig.tp_level, sig.symbol, pnl, close_ratio * 100);
+        }
+        m_pos_mgr.save_state(m_trades, m_orders_executed.load());
+    }
+
+    // ── 현물 SL: 전체 매도 (paper) ──
+    void handle_spot_sl(int wid, const WebhookSignal& sig) {
+        if (!m_sym_locks.wait_lock(sig.symbol, std::chrono::seconds(10))) {
+            spdlog::warn("[W-{}] SPOT_SL_SKIP {}: symbol lock timeout", wid, sig.symbol);
+            return;
+        }
+        SymbolLockGuard guard(m_sym_locks, sig.symbol);
+
+        std::string match_key;
+        {
+            std::lock_guard lock(m_pos_mtx);
+            for (auto& [key, p] : m_positions) {
+                if (p.symbol == sig.symbol && p.exchange == sig.exchange &&
+                    p.market_type == "spot" && p.side == "long") {
+                    match_key = key;
+                    break;
+                }
+            }
+        }
+
+        if (match_key.empty()) {
+            spdlog::warn("[W-{}] SPOT_SL {} no matching position", wid, sig.symbol);
+            return;
+        }
+
+        std::lock_guard lock(m_pos_mtx);
+        auto* pos = m_pos_mgr.get(match_key);
+        if (!pos) return;
+
+        double exit_price = sig.price > 0 ? sig.price : (pos->sl_price > 0 ? pos->sl_price : pos->entry_price);
+
+        spdlog::info("[SPOT_SHADOW] SL {} @ {:.2f}", sig.symbol, exit_price);
+        double pnl = m_trade_rec.record_close(*pos, exit_price, "SPOT_SL");
+        if (!m_trades.empty()) {
+            m_trades.back().exchange = sig.exchange;
+            m_trades.back().market_type = "spot";
+        }
+        m_pos_mgr.remove(match_key);
+        m_pos_mgr.save_state(m_trades, m_orders_executed.load());
+        spdlog::info("[SPOT_SHADOW] SL {} PnL={:.4f}", sig.symbol, pnl);
     }
 
     // ── TP/SL 설정: 3회 재시도 + 실패 시 긴급 청산 ──

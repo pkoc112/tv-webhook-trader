@@ -78,6 +78,10 @@ struct WebhookSignal {
     // -- 전략/시그널 소스 추적 --
     std::string strategy_name{"unknown"};
 
+    // -- 거래소/마켓 구분 --
+    std::string exchange{"bitget"};      // "bitget" / "upbit"
+    std::string market_type{"futures"};  // "futures" / "spot"
+
     // -- 수신 시각 --
     Timestamp   received_at{0};
 
@@ -303,6 +307,9 @@ private:
             }
         }
 
+        // 거래소/마켓 자동 감지
+        detect_exchange_market(sig);
+
         // 심볼 정규화
         sig.symbol = normalize_symbol(sig.ticker);
 
@@ -407,6 +414,45 @@ private:
             if (minutes >= 5)  return 1;
             return 0;
         } catch (...) { return 0; }
+    }
+
+    // 거래소 및 마켓 타입 자동 감지 (ticker_full 기반)
+    static void detect_exchange_market(WebhookSignal& sig) {
+        auto& tf = sig.ticker_full;
+        auto& tk = sig.ticker;
+
+        // ticker_full: "UPBIT:WCTKRW", "BITGET:BTCUSDT.P", "BINANCE:BTCUSDT"
+        // ticker:      "WCTKRW", "BTCUSDT.P", "BTCUSDT"
+
+        // 1. 거래소 감지 (ticker_full 우선)
+        auto tf_upper = to_upper(tf);
+        if (tf_upper.find("UPBIT") != std::string::npos) {
+            sig.exchange = "upbit";
+        } else if (tf_upper.find("BITGET") != std::string::npos) {
+            sig.exchange = "bitget";
+        } else if (tf_upper.find("BINANCE") != std::string::npos) {
+            sig.exchange = "binance";
+        } else {
+            sig.exchange = "bitget";  // 기본값
+        }
+
+        // 2. 마켓 타입 감지
+        //    .P 접미사 = 선물 (Perpetual)
+        //    KRW 접미사 = 업비트 현물
+        //    그 외 = ticker_full에서 추정
+        if (tk.size() > 2 && tk.substr(tk.size() - 2) == ".P") {
+            sig.market_type = "futures";
+        } else if (tk.size() > 3 && tk.substr(tk.size() - 3) == "KRW") {
+            sig.market_type = "spot";
+            sig.exchange = "upbit";  // KRW 페어는 무조건 업비트
+        } else if (sig.exchange == "upbit") {
+            sig.market_type = "spot";  // 업비트는 현물만
+        } else {
+            sig.market_type = "futures";  // 기본값
+        }
+
+        spdlog::info("[Signal] Exchange={} Market={} Ticker={} Full={}",
+            sig.exchange, sig.market_type, tk, tf);
     }
 
     static std::string normalize_symbol(const std::string& ticker) {

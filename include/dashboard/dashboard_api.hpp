@@ -195,7 +195,8 @@ private:
             // Basic Auth check (skip for health + HTML pages that have their own login form)
             auto target = std::string(req.target());
             bool is_public = (target == "/health" || target == "/" || target == "/index.html"
-                || target == "/dashboard.html" || target == "/learning.html" || target == "/learning");
+                || target == "/dashboard.html" || target == "/learning.html" || target == "/learning"
+                || target == "/spot.html" || target == "/spot");
             if (!is_public) {
                 if (!check_auth(req)) {
                     http::response<http::string_body> res{http::status::unauthorized, req.version()};
@@ -332,6 +333,9 @@ private:
             }
             if (target == "/learning.html" || target == "/learning") {
                 return serve_file("learning.html", "text/html");
+            }
+            if (target == "/spot.html" || target == "/spot") {
+                return serve_file("spot.html", "text/html");
             }
             // 정적 파일 서빙 (with path traversal protection)
             if (target.starts_with("/static/")) {

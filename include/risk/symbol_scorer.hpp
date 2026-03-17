@@ -37,6 +37,8 @@ struct TradeRecord {
     double exit_price{0.0};
     double quantity{0.0};
     std::string strategy{"unknown"};
+    std::string exchange{"bitget"};     // "bitget" / "upbit"
+    std::string market_type{"futures"}; // "futures" / "spot"
 };
 
 inline void from_json(const nlohmann::json& j, TradeRecord& t) {
@@ -49,6 +51,8 @@ inline void from_json(const nlohmann::json& j, TradeRecord& t) {
     t.exit_price  = j.value("exit_price", 0.0);
     t.quantity    = j.value("quantity", 0.0);
     t.strategy    = j.value("strategy", std::string("unknown"));
+    t.exchange    = j.value("exchange", std::string("bitget"));
+    t.market_type = j.value("market_type", std::string("futures"));
 }
 
 // -- TF별 서브 점수 --

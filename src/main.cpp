@@ -37,6 +37,8 @@
 #include "execution/execution_engine.hpp"
 #include "dashboard/dashboard_api.hpp"
 #include "dashboard/tf_analytics.hpp"
+#include "exchange/upbit_auth.hpp"
+#include "exchange/upbit_rest.hpp"
 
 using json = nlohmann::json;
 
@@ -157,6 +159,18 @@ int main(int argc, char* argv[]) {
             keys["api_secret"].get<std::string>(),
             keys["passphrase"].get<std::string>()
         );
+
+        // -- 2.5. Upbit 인증 (현물 거래용) --
+        hft::UpbitAuth upbit_auth;
+        if (keys.contains("upbit_access_key") && keys.contains("upbit_secret_key")) {
+            upbit_auth = hft::UpbitAuth(
+                keys["upbit_access_key"].get<std::string>(),
+                keys["upbit_secret_key"].get<std::string>()
+            );
+            spdlog::info("Upbit API configured (spot trading)");
+        } else {
+            spdlog::info("Upbit API not configured (spot signals will be paper-only)");
+        }
 
         hft::BitgetRestConfig rest_config;
         if (config.contains("exchange")) {
@@ -291,7 +305,8 @@ int main(int argc, char* argv[]) {
                         {"key", key}, {"symbol", p.symbol}, {"timeframe", p.timeframe},
                         {"side", p.side}, {"entry_price", p.entry_price},
                         {"quantity", p.quantity}, {"leverage", p.leverage},
-                        {"tier", p.tier}, {"strategy", p.strategy}
+                        {"tier", p.tier}, {"strategy", p.strategy},
+                        {"exchange", p.exchange}, {"market_type", p.market_type}
                     });
                 }
                 return arr;
