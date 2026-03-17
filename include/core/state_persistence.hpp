@@ -63,7 +63,8 @@ public:
                     {"side", p.side}, {"entry_price", p.entry_price},
                     {"quantity", p.quantity}, {"leverage", p.leverage},
                     {"sl_price", p.sl_price}, {"tp1_price", p.tp1_price},
-                    {"tier", p.tier}, {"strategy", p.strategy}
+                    {"tier", p.tier}, {"strategy", p.strategy},
+                    {"is_real", p.is_real}
                 };
             }
 
@@ -160,6 +161,7 @@ private:
                     p.tp1_price   = pj.value("tp1_price", 0.0);
                     p.tier        = pj.value("tier", "C");
                     p.strategy    = pj.value("strategy", std::string("unknown"));
+                    p.is_real     = pj.value("is_real", false);
                     result.positions[key] = p;
                 }
             }

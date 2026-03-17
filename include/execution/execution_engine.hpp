@@ -847,7 +847,8 @@ private:
             m_risk.on_position_opened(sig.symbol, sig.size, side_str);
             m_pos_mgr.register_position(sig.symbol, tf, side_str,
                 sig.price, sig.size, leverage, sl_price,
-                sig.has_tp1() ? sig.tp1 : 0, tier, oid, sig.strategy_name);
+                sig.has_tp1() ? sig.tp1 : 0, tier, oid, sig.strategy_name,
+                /*is_real=*/true);
 
             spdlog::info("[W-{}] OK {} {} sz={:.6f} exid={}",
                 wid, sig.action, sig.symbol, sig.size, resp.exchange_order_id);
@@ -909,8 +910,16 @@ private:
 
         double close_qty = match.quantity * close_ratio;
 
-        if (m_trading.shadow_mode) {
-            // Shadow mode: simulate close without touching exchange
+        // Check if this is a real position (needs exchange API) or paper
+        bool pos_is_real = false;
+        {
+            std::lock_guard lock(m_pos_mtx);
+            auto* pos = m_pos_mgr.get(match.key);
+            if (pos) pos_is_real = pos->is_real;
+        }
+
+        if (m_trading.shadow_mode && !pos_is_real) {
+            // Pure shadow/paper position: simulate close without touching exchange
             spdlog::info("[SHADOW] TP {} {} close_qty={:.6f}/{:.6f} hold={}",
                 sig.tp_level, sig.symbol, close_qty, match.quantity, hold_side);
 
@@ -936,6 +945,12 @@ private:
                 m_pos_mgr.save_state(m_trades, m_orders_executed.load());
             }
             return;
+        }
+
+        // Real position (or live mode): close via exchange API
+        if (pos_is_real && m_trading.shadow_mode) {
+            spdlog::info("[W-{}] REAL_POS TP {} {} — closing on exchange despite shadow mode",
+                wid, sig.tp_level, sig.symbol);
         }
 
         // Retry logic for TP close (transient failures)
@@ -1010,8 +1025,16 @@ private:
             return;
         }
 
-        if (m_trading.shadow_mode) {
-            // Shadow mode: simulate full close without touching exchange
+        // Check if this is a real position
+        bool sl_pos_is_real = false;
+        {
+            std::lock_guard lock(m_pos_mtx);
+            auto* pos = m_pos_mgr.get(match.key);
+            if (pos) sl_pos_is_real = pos->is_real;
+        }
+
+        if (m_trading.shadow_mode && !sl_pos_is_real) {
+            // Pure shadow/paper position: simulate full close
             spdlog::info("[SHADOW] SL {} hold={} qty={:.6f}", sig.symbol, hold_side, match.quantity);
 
             std::lock_guard lock(m_pos_mtx);
@@ -1027,6 +1050,12 @@ private:
                     " PnL=" + std::to_string(pnl).substr(0,8), sig.symbol);
             }
             return;
+        }
+
+        // Real position (or live mode): close via exchange API
+        if (sl_pos_is_real && m_trading.shadow_mode) {
+            spdlog::info("[W-{}] REAL_POS SL {} — closing on exchange despite shadow mode",
+                wid, sig.symbol);
         }
 
         // flash close with retry (SL must succeed)

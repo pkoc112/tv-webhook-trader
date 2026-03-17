@@ -71,7 +71,8 @@ public:
                           const std::string& side, double entry_price, double quantity,
                           int leverage, double sl_price, double tp1_price,
                           const std::string& tier, uint64_t oid,
-                          const std::string& strategy = "unknown") {
+                          const std::string& strategy = "unknown",
+                          bool is_real = false) {
         std::lock_guard lock(m_pos_mtx);
         std::string key = symbol + "_" + timeframe + "_" + std::to_string(oid);
         ManagedPosition pos;
@@ -86,6 +87,7 @@ public:
         pos.tier        = tier;
         pos.strategy    = strategy;
         pos.opened_at   = std::chrono::system_clock::now();
+        pos.is_real     = is_real;
         m_positions[key] = pos;
     }
 
@@ -294,20 +296,34 @@ public:
             spdlog::info("[Sync] Exchange has {} open position(s), internal has {}",
                 exchange_positions.size(), m_positions.size());
 
-            // === 1) Forward: Remove ghost positions ===
+            // === 0) Mark positions matching exchange as is_real ===
+            for (auto& [key, pos] : m_positions) {
+                std::string lookup = pos.symbol + ":" + pos.side;
+                if (exchange_positions.find(lookup) != exchange_positions.end()) {
+                    if (!pos.is_real) {
+                        pos.is_real = true;
+                        spdlog::info("[Sync] Marked as real: {} {} (exists on exchange)", pos.symbol, pos.side);
+                    }
+                }
+            }
+
+            // === 1) Forward: Remove ghost positions (only real ones) ===
             std::vector<std::string> to_remove;
             for (auto& [key, pos] : m_positions) {
                 std::string lookup = pos.symbol + ":" + pos.side;
                 if (exchange_positions.find(lookup) == exchange_positions.end()) {
-                    to_remove.push_back(key);
-                    spdlog::warn("[Sync] Ghost position removed: key={} symbol={} side={} entry={:.2f} qty={:.6f}",
-                        key, pos.symbol, pos.side, pos.entry_price, pos.quantity);
+                    if (pos.is_real) {
+                        // Real position gone from exchange — closed externally (SL/liquidation)
+                        to_remove.push_back(key);
+                        spdlog::warn("[Sync] Ghost position removed: key={} symbol={} side={} entry={:.2f} qty={:.6f}",
+                            key, pos.symbol, pos.side, pos.entry_price, pos.quantity);
+                    }
+                    // Paper/shadow positions: not on exchange is NORMAL, skip
                 }
             }
             for (auto& key : to_remove) {
                 auto it = m_positions.find(key);
                 if (it != m_positions.end()) {
-                    // Record ghost close as a trade (exchange closed it — likely SL/liquidation)
                     spdlog::warn("[Sync] Ghost PnL not recorded (exchange closed): {} {} entry={:.4f} qty={:.6f}",
                         it->second.symbol, it->second.side, it->second.entry_price, it->second.quantity);
                     m_positions.erase(it);
@@ -331,6 +347,7 @@ public:
                     mp.quantity    = ep.total;
                     mp.leverage    = ep.leverage;
                     mp.tier        = "C";
+                    mp.is_real     = true;  // 거래소에서 온 포지션은 항상 real
                     mp.opened_at   = std::chrono::system_clock::now();
 
                     std::string internal_key = ep.symbol + "_" + ep.hold_side + "_ext";
