@@ -305,6 +305,28 @@ int main(int argc, char* argv[]) {
             },
             .get_strategy_stats = [&exec_engine]() {
                 return exec_engine.get_strategy_stats();
+            },
+            .import_trades = [&exec_engine](const nlohmann::json& body) -> nlohmann::json {
+                // Expected: {"trades": [{symbol, timeframe, pnl, fee, entry_price, exit_price, quantity, exit_reason, strategy}, ...]}
+                if (!body.contains("trades") || !body["trades"].is_array()) {
+                    return {{"error", "missing 'trades' array"}, {"imported", 0}};
+                }
+                std::vector<hft::TradeRecord> records;
+                for (const auto& t : body["trades"]) {
+                    hft::TradeRecord rec;
+                    rec.symbol      = t.value("symbol", "");
+                    rec.timeframe   = t.value("timeframe", "");
+                    rec.exit_reason = t.value("exit_reason", "");
+                    rec.pnl         = t.value("pnl", 0.0);
+                    rec.fee         = t.value("fee", 0.0);
+                    rec.entry_price = t.value("entry_price", 0.0);
+                    rec.exit_price  = t.value("exit_price", 0.0);
+                    rec.quantity    = t.value("quantity", 0.0);
+                    rec.strategy    = t.value("strategy", "imported");
+                    records.push_back(std::move(rec));
+                }
+                int count = exec_engine.import_trades(records);
+                return {{"imported", count}, {"total_submitted", static_cast<int>(records.size())}, {"status", "ok"}};
             }
         };
 

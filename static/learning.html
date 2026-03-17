@@ -209,6 +209,7 @@ tr:hover { background: var(--bg-card-hover); }
     </div>
     <div class="header-right">
         <span style="font-size:11px;color:var(--text-muted);font-family:'JetBrains Mono',monospace" id="lastUpdate">...</span>
+        <button class="btn" onclick="showImportModal()" style="background:rgba(139,92,246,0.15);color:var(--purple);border-color:var(--purple)">📥 거래 임포트</button>
         <button class="btn" onclick="refreshAll()">새로고침</button>
         <a href="/" class="btn">메인 대시보드</a>
     </div>
@@ -688,10 +689,123 @@ function renderPositions() {
     }).join('');
 }
 
+// ── Trade Import ──
+function showImportModal() {
+    document.getElementById('importModal').classList.remove('hidden');
+    document.getElementById('importJson').value = '';
+    document.getElementById('importResult').textContent = '';
+    document.getElementById('importFile').value = '';
+}
+
+function hideImportModal() {
+    document.getElementById('importModal').classList.add('hidden');
+}
+
+function handleFileSelect(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(ev) {
+        document.getElementById('importJson').value = ev.target.result;
+    };
+    reader.readAsText(file);
+}
+
+async function doImport() {
+    const resultEl = document.getElementById('importResult');
+    const raw = document.getElementById('importJson').value.trim();
+    if (!raw) { resultEl.textContent = 'JSON 데이터를 입력하세요'; resultEl.style.color = 'var(--red)'; return; }
+
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    } catch(e) {
+        resultEl.textContent = 'JSON 파싱 오류: ' + e.message;
+        resultEl.style.color = 'var(--red)';
+        return;
+    }
+
+    // Normalize: accept array or {trades: [...]}
+    let trades;
+    if (Array.isArray(parsed)) {
+        trades = parsed;
+    } else if (parsed.trades && Array.isArray(parsed.trades)) {
+        trades = parsed.trades;
+    } else {
+        resultEl.textContent = 'JSON 형식 오류: 배열이거나 {"trades": [...]} 형식이어야 합니다';
+        resultEl.style.color = 'var(--red)';
+        return;
+    }
+
+    resultEl.textContent = `${trades.length}건 임포트 중...`;
+    resultEl.style.color = 'var(--yellow)';
+
+    try {
+        const r = await fetch('/api/import-trades', {
+            method: 'POST',
+            headers: {
+                'Authorization': 'Basic ' + authToken,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ trades: trades })
+        });
+        if (!r.ok) {
+            resultEl.textContent = '서버 오류: ' + r.status;
+            resultEl.style.color = 'var(--red)';
+            return;
+        }
+        const data = await r.json();
+        if (data.error) {
+            resultEl.textContent = '오류: ' + data.error;
+            resultEl.style.color = 'var(--red)';
+        } else {
+            resultEl.textContent = `성공! ${data.imported}건 임포트 (제출: ${data.total_submitted}건, 중복 제외)`;
+            resultEl.style.color = 'var(--green)';
+            setTimeout(() => { hideImportModal(); refreshAll(); }, 2000);
+        }
+    } catch(e) {
+        resultEl.textContent = '네트워크 오류: ' + e.message;
+        resultEl.style.color = 'var(--red)';
+    }
+}
+
 // Init
 getAuth();
 refreshAll();
 setInterval(refreshAll, 10000);
 </script>
+
+<!-- Import Modal -->
+<div id="importModal" class="hidden" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center">
+<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:24px;width:600px;max-width:90vw;max-height:80vh;overflow-y:auto">
+    <h2 style="margin:0 0 8px;font-size:18px;color:var(--text-primary)">📥 거래 기록 임포트</h2>
+    <p style="margin:0 0 16px;font-size:12px;color:var(--text-muted)">
+        Python sfx-trader 또는 외부 거래 기록을 JSON으로 임포트합니다.<br>
+        중복 거래는 자동으로 건너뜁니다.
+    </p>
+    <div style="margin-bottom:12px">
+        <label style="font-size:11px;color:var(--text-secondary);display:block;margin-bottom:4px">JSON 파일 선택</label>
+        <input type="file" id="importFile" accept=".json" onchange="handleFileSelect(event)" style="font-size:12px;color:var(--text-secondary)">
+    </div>
+    <div style="margin-bottom:12px">
+        <label style="font-size:11px;color:var(--text-secondary);display:block;margin-bottom:4px">또는 JSON 직접 입력</label>
+        <textarea id="importJson" rows="10" placeholder='[{"symbol":"BTCUSDT","timeframe":"15m","pnl":0.5,"fee":0.01,"entry_price":50000,"exit_price":50100,"quantity":0.01,"exit_reason":"tp1","strategy":"sfx"}]'
+            style="width:100%;background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-family:'JetBrains Mono',monospace;font-size:11px;padding:8px;resize:vertical;box-sizing:border-box"></textarea>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+        <button onclick="doImport()" style="background:var(--purple);color:white;border:none;border-radius:6px;padding:8px 20px;cursor:pointer;font-size:13px;font-weight:600">임포트 실행</button>
+        <button onclick="hideImportModal()" style="background:transparent;color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;padding:8px 16px;cursor:pointer;font-size:13px">취소</button>
+        <span id="importResult" style="font-size:12px;font-family:'JetBrains Mono',monospace;margin-left:8px"></span>
+    </div>
+    <div style="margin-top:16px;padding:12px;background:var(--bg-secondary);border-radius:6px;font-size:11px;color:var(--text-muted);line-height:1.6">
+        <strong style="color:var(--text-secondary)">필수 필드:</strong> symbol, pnl<br>
+        <strong style="color:var(--text-secondary)">선택 필드:</strong> timeframe, fee, entry_price, exit_price, quantity, exit_reason, strategy<br>
+        <strong style="color:var(--text-secondary)">형식:</strong> 배열 <code>[{...}, ...]</code> 또는 <code>{"trades": [{...}, ...]}</code>
+    </div>
+</div>
+</div>
+<style>
+#importModal.hidden { display:none!important; }
+</style>
 </body>
 </html>

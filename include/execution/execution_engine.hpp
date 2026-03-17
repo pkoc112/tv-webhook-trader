@@ -297,6 +297,49 @@ public:
         return m_trade_rec.get_strategy_stats();
     }
 
+    // ── Import external trade records (e.g., from Python sfx-trader) ──
+    // Returns: number of new trades imported (duplicates skipped)
+    int import_trades(const std::vector<TradeRecord>& external_trades) {
+        if (external_trades.empty()) return 0;
+
+        std::lock_guard lock(m_pos_mtx);
+
+        // Deduplicate: skip trades that already exist
+        // Use (symbol, pnl, entry_price, exit_price) as a rough fingerprint
+        auto is_duplicate = [&](const TradeRecord& ext) {
+            for (const auto& t : m_trades) {
+                if (t.symbol == ext.symbol &&
+                    std::abs(t.pnl - ext.pnl) < 1e-8 &&
+                    std::abs(t.entry_price - ext.entry_price) < 1e-8 &&
+                    std::abs(t.exit_price - ext.exit_price) < 1e-8) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        int imported = 0;
+        for (const auto& ext : external_trades) {
+            if (ext.symbol.empty()) continue;  // skip invalid
+            if (is_duplicate(ext)) continue;
+
+            m_trades.push_back(ext);
+            m_learner.record_trade(ext);
+            imported++;
+        }
+
+        if (imported > 0) {
+            // Rescore all symbols with new data
+            m_scorer.rescore_all(m_trades);
+            // Persist immediately
+            m_pos_mgr.save_state(m_trades, m_orders_executed.load());
+            spdlog::info("[Import] Imported {} new trades (total now: {})",
+                imported, m_trades.size());
+        }
+
+        return imported;
+    }
+
 private:
     void init_leverage() {
         net::io_context ioc;

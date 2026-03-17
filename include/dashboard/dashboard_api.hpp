@@ -51,6 +51,7 @@ struct DashboardCallbacks {
     std::function<nlohmann::json()> get_learner_summary;
     std::function<nlohmann::json()> get_tf_stats;
     std::function<nlohmann::json()> get_strategy_stats;
+    std::function<nlohmann::json(const nlohmann::json&)> import_trades;
 };
 
 // Simple per-IP rate limiter: max requests per window
@@ -302,6 +303,20 @@ private:
                         m_cb.get_strategy_stats().dump());
                 }
                 return make_response(http::status::ok, "[]");
+            }
+            // POST: Import external trades
+            if (target == "/api/import-trades" && req.method() == http::verb::post) {
+                if (m_cb.import_trades) {
+                    try {
+                        auto body = nlohmann::json::parse(req.body());
+                        auto result = m_cb.import_trades(body);
+                        return make_response(http::status::ok, result.dump());
+                    } catch (const nlohmann::json::parse_error& e) {
+                        return make_response(http::status::bad_request,
+                            nlohmann::json{{"error", "invalid JSON"}, {"detail", e.what()}}.dump());
+                    }
+                }
+                return make_response(http::status::not_found, R"({"error":"import not configured"})");
             }
             if (target == "/health") {
                 return make_response(http::status::ok,
