@@ -308,11 +308,41 @@ public:
             }
 
             // === 1) Forward: Remove ghost positions (only real ones) ===
+            // For ext positions, detect side changes (e.g. manual long→short)
+            // and update in-place instead of remove+reimport churn
             std::vector<std::string> to_remove;
+            std::unordered_set<std::string> side_changed_symbols;  // symbols handled by in-place update
+
             for (auto& [key, pos] : m_positions) {
                 std::string lookup = pos.symbol + ":" + pos.side;
                 if (exchange_positions.find(lookup) == exchange_positions.end()) {
                     if (pos.is_real) {
+                        // Check if this is an ext position with a side change
+                        if (key.size() > 4 && key.substr(key.size() - 4) == "_ext") {
+                            std::string other_side = (pos.side == "long") ? "short" : "long";
+                            std::string other_lookup = pos.symbol + ":" + other_side;
+                            auto ex_it = exchange_positions.find(other_lookup);
+                            if (ex_it != exchange_positions.end()) {
+                                // Side changed — update in-place
+                                auto& ep = ex_it->second;
+                                pos.side        = ep.hold_side;
+                                pos.entry_price = ep.avg_price;
+                                pos.quantity    = ep.total;
+                                pos.leverage    = ep.leverage;
+                                // Re-key the position
+                                std::string new_key = ep.symbol + "_" + ep.hold_side + "_ext";
+                                if (new_key != key) {
+                                    // Will be re-keyed after iteration
+                                    to_remove.push_back(key);  // remove old key
+                                    m_positions[new_key] = pos; // add with new key
+                                }
+                                side_changed_symbols.insert(pos.symbol);
+                                spdlog::info("[Sync] Ext position side updated: {} {} → {} entry={:.4f} qty={:.6f} lev={}x",
+                                    ep.symbol, (ep.hold_side == "long" ? "short" : "long"),
+                                    ep.hold_side, ep.avg_price, ep.total, ep.leverage);
+                                continue;
+                            }
+                        }
                         // Real position gone from exchange — closed externally (SL/liquidation)
                         to_remove.push_back(key);
                         spdlog::warn("[Sync] Ghost position removed: key={} symbol={} side={} entry={:.2f} qty={:.6f}",
@@ -324,8 +354,11 @@ public:
             for (auto& key : to_remove) {
                 auto it = m_positions.find(key);
                 if (it != m_positions.end()) {
-                    spdlog::warn("[Sync] Ghost PnL not recorded (exchange closed): {} {} entry={:.4f} qty={:.6f}",
-                        it->second.symbol, it->second.side, it->second.entry_price, it->second.quantity);
+                    // Only log ghost PnL for non-side-change removals
+                    if (side_changed_symbols.find(it->second.symbol) == side_changed_symbols.end()) {
+                        spdlog::warn("[Sync] Ghost PnL not recorded (exchange closed): {} {} entry={:.4f} qty={:.6f}",
+                            it->second.symbol, it->second.side, it->second.entry_price, it->second.quantity);
+                    }
                     m_positions.erase(it);
                 }
             }
@@ -338,6 +371,10 @@ public:
 
             int imported = 0;
             for (auto& [exkey, ep] : exchange_positions) {
+                // Skip if already handled by side-change update
+                if (side_changed_symbols.find(ep.symbol) != side_changed_symbols.end())
+                    continue;
+
                 if (internal_lookup.find(exkey) == internal_lookup.end()) {
                     ManagedPosition mp;
                     mp.symbol      = ep.symbol;
