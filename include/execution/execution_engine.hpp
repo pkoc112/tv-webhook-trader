@@ -1150,6 +1150,7 @@ private:
         // 주문 실행 (preset TP/SL 포함 — 별도 API보다 안정적)
         double preset_tp = sig.has_tp1() ? sig.tp1 : 0;
         double preset_sl = sig.has_sl() ? sig.sl : 0;
+        if (std::isnan(preset_sl) || !std::isfinite(preset_sl)) preset_sl = 0;
 
         // 백업 SL: TV에서 SL 미제공 시 안전망 (기본 3%)
         // TV SL 시그널이 1차, 이 프리셋이 2차 안전장치
@@ -1242,7 +1243,7 @@ private:
             if (pos) pos_is_real = pos->is_real;
         }
 
-        if (m_trading.shadow_mode && !pos_is_real) {
+        if (!pos_is_real) {
             // Pure shadow/paper position: simulate close without touching exchange
             spdlog::info("[SHADOW] TP {} {} close_qty={:.6f}/{:.6f} hold={}",
                 sig.tp_level, sig.symbol, close_qty, match.quantity, hold_side);
@@ -1357,7 +1358,7 @@ private:
             if (pos) sl_pos_is_real = pos->is_real;
         }
 
-        if (m_trading.shadow_mode && !sl_pos_is_real) {
+        if (!sl_pos_is_real) {
             // Pure shadow/paper position: simulate full close
             spdlog::info("[SHADOW] SL {} hold={} qty={:.6f}", sig.symbol, hold_side, match.quantity);
 

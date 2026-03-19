@@ -176,6 +176,10 @@ public:
             if (code == "00000") {
                 spdlog::info("[REST] Emergency close succeeded: {}", symbol);
                 return true;
+            } else if (code == "22002") {
+                // "No position to close" — position already closed, treat as success
+                spdlog::info("[REST] Emergency close: no position to close (already closed): {}", symbol);
+                return true;
             } else {
                 spdlog::error("[REST] Emergency close failed: code={} msg={}",
                     code, j.value("msg", "unknown"));
