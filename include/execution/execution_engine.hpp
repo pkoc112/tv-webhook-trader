@@ -419,6 +419,21 @@ public:
         result["futures_by_tf"] = futures_tf;
         result["spot_by_tf"] = spot_tf;
 
+        // ★ pipeline을 TF 기준으로 덮어쓰기 (auto-live와 동일 기준)
+        // 심볼 단위 pipeline(R=11)과 TF 단위(R=2)가 달라 대시보드 오해 방지
+        auto tf_all = m_readiness.evaluate_all_by_tf(futures_tf, spot_tf);
+        auto tf_ps = m_readiness.get_pipeline_status(tf_all);
+        result["pipeline"] = nlohmann::json{
+            {"total_symbols", tf_ps.total_symbols},
+            {"blocked", tf_ps.blocked},
+            {"learning", tf_ps.learning},
+            {"promising", tf_ps.promising},
+            {"ready", tf_ps.ready},
+            {"proven", tf_ps.proven},
+            {"can_go_live", tf_ps.can_go_live},
+            {"min_symbols_for_live", tf_ps.min_symbols_for_live}
+        };
+
         // 자동 전환 상태
         result["auto_live"] = nlohmann::json{
             {"enabled", m_trading.auto_live},
