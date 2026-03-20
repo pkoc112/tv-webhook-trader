@@ -419,20 +419,7 @@ public:
         result["futures_by_tf"] = futures_tf;
         result["spot_by_tf"] = spot_tf;
 
-        // ★ pipeline을 TF 기준으로 덮어쓰기 (auto-live와 동일 기준)
-        // 심볼 단위 pipeline(R=11)과 TF 단위(R=2)가 달라 대시보드 오해 방지
-        auto tf_all = m_readiness.evaluate_all_by_tf(futures_tf, spot_tf);
-        auto tf_ps = m_readiness.get_pipeline_status(tf_all);
-        result["pipeline"] = nlohmann::json{
-            {"total_symbols", tf_ps.total_symbols},
-            {"blocked", tf_ps.blocked},
-            {"learning", tf_ps.learning},
-            {"promising", tf_ps.promising},
-            {"ready", tf_ps.ready},
-            {"proven", tf_ps.proven},
-            {"can_go_live", tf_ps.can_go_live},
-            {"min_symbols_for_live", tf_ps.min_symbols_for_live}
-        };
+        // pipeline은 이미 심볼 단위 evaluate_all() 기준 (auto-live와 동일)
 
         // 자동 전환 상태
         result["auto_live"] = nlohmann::json{
@@ -734,14 +721,14 @@ private:
                 spdlog::warn("[Periodic] Sync failed: {}", e.what());
             }
 
-            // ★ 자동 Live 전환 체크 (심볼+TF별 평가)
+            // ★ 자동 Live 전환 체크 (심볼 단위 합산 평가)
             if (m_trading.auto_live) {
                 try {
-                    auto futures_tf = m_shadow.get_symbol_tf_report();
-                    auto spot_tf = m_spot_shadow.get_symbol_tf_report();
+                    auto futures_report = m_shadow.get_symbol_report();
+                    auto spot_report = m_spot_shadow.get_symbol_report();
 
                     std::unordered_set<std::string> new_eligible;
-                    auto ps = m_readiness.refresh_eligible(futures_tf, spot_tf, new_eligible);
+                    auto ps = m_readiness.refresh_eligible(futures_report, spot_report, new_eligible);
 
                     {
                         std::lock_guard elock(m_eligible_mtx);
@@ -1141,15 +1128,14 @@ private:
 
         std::string side_str = sig.action == "buy" ? "long" : "short";
 
-        // ★ Shadow/Live 분기: 자동 전환 모드에서는 심볼+TF별로 판단
+        // ★ Shadow/Live 분기: 자동 전환 모드에서는 심볼 단위로 판단
         bool force_shadow = m_trading.shadow_mode;
         if (!force_shadow && m_auto_live_active.load()) {
-            // 자동 Live 모드: 이 심볼+TF가 적격인지 체크
-            std::string eligible_key = sig.symbol + ":" + tf;
+            // 자동 Live 모드: 이 심볼이 적격인지 체크 (모든 TF 합산 기준)
             std::lock_guard elock(m_eligible_mtx);
-            if (m_eligible_keys.find(eligible_key) == m_eligible_keys.end()) {
+            if (m_eligible_keys.find(sig.symbol) == m_eligible_keys.end()) {
                 force_shadow = true;  // 적격 아님 → Shadow로 처리
-                spdlog::info("[W-{}] AUTO-LIVE SHADOW {} ({}:not eligible)", wid, sig.symbol, eligible_key);
+                spdlog::info("[W-{}] AUTO-LIVE SHADOW {} (not eligible)", wid, sig.symbol);
             }
         }
 

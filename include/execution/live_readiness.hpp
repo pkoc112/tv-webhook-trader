@@ -281,24 +281,25 @@ public:
     }
 
     // ================================================================
-    // 자동 전환용: 적격 심볼+TF Set 빌드 + 파이프라인 상태 반환
+    // 자동 전환용: 적격 심볼 Set 빌드 + 파이프라인 상태 반환
     // 주기적으로 호출 (60초마다). 결과를 캐시하여 주문 시 O(1) 조회.
     //
-    // eligible_keys: "VICUSDT:15" 형태의 READY/PROVEN 키 집합 (output)
+    // eligible_keys: "ZBCNUSDT" 형태의 READY/PROVEN 심볼 집합 (output)
+    // 심볼 단위 합산 평가: 같은 심볼의 모든 TF 거래를 합산하여 등급 산정
     // Returns: PipelineStatus (can_go_live 포함)
     // ================================================================
     [[nodiscard]] PipelineStatus refresh_eligible(
-        const nlohmann::json& futures_tf_report,
-        const nlohmann::json& spot_tf_report,
+        const nlohmann::json& futures_report,
+        const nlohmann::json& spot_report,
         std::unordered_set<std::string>& eligible_keys) const
     {
         eligible_keys.clear();
-        auto all = evaluate_all_by_tf(futures_tf_report, spot_tf_report);
+        auto all = evaluate_all(futures_report, spot_report);
         auto ps = get_pipeline_status(all);
 
         for (auto& r : all) {
             if (r.level == ReadinessLevel::READY || r.level == ReadinessLevel::PROVEN) {
-                eligible_keys.insert(r.symbol);  // "VICUSDT:15" 형태
+                eligible_keys.insert(r.symbol);  // "ZBCNUSDT" 형태 (심볼만)
             }
         }
 
