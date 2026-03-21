@@ -922,13 +922,23 @@ private:
         }
 
         // 1. 티어 체크 — Shadow vs Live 모드 분기
+        //    ★ auto-live 모드에서는 eligible 심볼이면 tier 체크 bypass
         std::string tier = m_scorer.get_tier(sig.symbol);
+        bool is_eligible = false;
+        if (m_auto_live_active.load()) {
+            std::lock_guard elock(m_eligible_mtx);
+            is_eligible = m_eligible_keys.find(sig.symbol) != m_eligible_keys.end();
+        }
+
         if (m_trading.shadow_mode) {
             // Shadow 모드: 모든 티어 허용 (학습 데이터 수집)
-            // X/D 티어도 진입 → 거래 기록 → 스코어링에 반영
             spdlog::debug("[W-{}] SHADOW {} tier={} (all tiers allowed)", wid, sig.symbol, tier);
+        } else if (is_eligible) {
+            // Auto-live eligible 심볼: tier 체크 bypass (readiness grade로 이미 검증됨)
+            spdlog::info("[W-{}] ELIGIBLE {} tier={} (auto-live bypass, readiness approved)",
+                wid, sig.symbol, tier);
         } else {
-            // Live 모드: 학습 검증된 심볼만 실전 매매
+            // Live 모드 (non-eligible): 학습 검증된 심볼만 실전 매매
             std::string live_min = m_port_risk.get_live_min_tier();
             if (!tier_meets_min(tier, live_min)) {
                 spdlog::info("[W-{}] SKIP {}: tier {} < live_min {} (unproven symbol)",
@@ -940,7 +950,10 @@ private:
 
         // 1.2. ★ Shadow Tracker 등급 필터 — 가상 추적 성적 기반
         // Shadow에서 충분한 데이터(5거래+)가 쌓이고 등급이 C 이하면 진입 차단
-        {
+        // ★ auto-live eligible 심볼은 readiness에서 이미 검증됨 → bypass
+        if (is_eligible) {
+            spdlog::debug("[W-{}] SHADOW_GRADE bypass {} (eligible)", wid, sig.symbol);
+        } else {
             auto shadow_report = m_shadow.get_symbol_report();
             for (auto& sr : shadow_report) {
                 if (sr.value("symbol", "") == sig.symbol) {
@@ -972,7 +985,7 @@ private:
                     break;
                 }
             }
-        }
+        } // end shadow grade filter (is_eligible else block)
 
         // 1.5. 학습 엔진 판단 (L1~L4)
         int current_hour_utc = -1;
@@ -1003,7 +1016,7 @@ private:
                 m_risk_skips.fetch_add(1);
                 return;
             }
-            if (!m_trading.shadow_mode && !tier_meets_min(tier, filt.min_tier)) {
+            if (!m_trading.shadow_mode && !is_eligible && !tier_meets_min(tier, filt.min_tier)) {
                 spdlog::info("[W-{}] SKIP {}: tier {} < {} for TF {}",
                     wid, sig.symbol, tier, filt.min_tier, tf);
                 m_risk_skips.fetch_add(1);
@@ -1129,14 +1142,11 @@ private:
         std::string side_str = sig.action == "buy" ? "long" : "short";
 
         // ★ Shadow/Live 분기: 자동 전환 모드에서는 심볼 단위로 판단
+        //    is_eligible은 위 tier 체크 단계에서 이미 계산됨
         bool force_shadow = m_trading.shadow_mode;
-        if (!force_shadow && m_auto_live_active.load()) {
-            // 자동 Live 모드: 이 심볼이 적격인지 체크 (모든 TF 합산 기준)
-            std::lock_guard elock(m_eligible_mtx);
-            if (m_eligible_keys.find(sig.symbol) == m_eligible_keys.end()) {
-                force_shadow = true;  // 적격 아님 → Shadow로 처리
-                spdlog::info("[W-{}] AUTO-LIVE SHADOW {} (not eligible)", wid, sig.symbol);
-            }
+        if (!force_shadow && m_auto_live_active.load() && !is_eligible) {
+            force_shadow = true;  // 적격 아님 → Shadow로 처리
+            spdlog::info("[W-{}] AUTO-LIVE SHADOW {} (not eligible)", wid, sig.symbol);
         }
 
         if (force_shadow) {
