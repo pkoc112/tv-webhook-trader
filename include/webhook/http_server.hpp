@@ -197,8 +197,18 @@ private:
         spdlog::info("[HTTP] Signal received: {} {} {} @ {:.2f}",
             signal_type_str(sig.sig_type), sig.action, sig.symbol, sig.price);
 
-        m_callback(std::move(sig));
-        send_response(http::status::ok, R"({"status":"accepted"})");
+        try {
+            m_callback(std::move(sig));
+            send_response(http::status::ok, R"({"status":"accepted"})");
+        } catch (const std::exception& e) {
+            spdlog::error("[HTTP] Callback exception: {}", e.what());
+            send_response(http::status::internal_server_error,
+                R"({"error":"internal error","retry":true})");
+        } catch (...) {
+            spdlog::error("[HTTP] Unknown callback exception");
+            send_response(http::status::internal_server_error,
+                R"({"error":"internal error","retry":true})");
+        }
     }
 
     void send_response(http::status status, std::string body) {

@@ -441,14 +441,23 @@ private:
                 http::response<http::string_body> res;
                 http::read(*m_stream, buffer, res);
 
+                auto http_code = static_cast<int>(res.result());
                 spdlog::debug("[REST] Response [{}]: {}",
-                    static_cast<int>(res.result()),
-                    res.body().substr(0, 200));
+                    http_code, res.body().substr(0, 200));
 
                 // Connection: close 이면 연결 해제
                 auto conn = res[http::field::connection];
                 if (conn == "close") {
                     close_connection();
+                }
+
+                // HTTP 502/503/429: 서버 에러 — 재시도 가능
+                if ((http_code == 502 || http_code == 503 || http_code == 429) && attempt == 0) {
+                    int wait_ms = (http_code == 429) ? 1000 : 500;
+                    spdlog::warn("[REST] HTTP {} on {} — retrying in {}ms", http_code, path, wait_ms);
+                    close_connection();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
+                    continue;
                 }
 
                 return res.body();

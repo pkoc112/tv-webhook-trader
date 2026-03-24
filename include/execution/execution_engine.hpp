@@ -1178,6 +1178,16 @@ private:
         auto resp = rest.place_futures_order(order_req, preset_tp, preset_sl);
         m_risk.on_order_done();
 
+        // 네트워크/서버 에러 시 1회 재시도 (code 99999 = connection_error)
+        if (resp.status == OrderStatus::Rejected && resp.error_code == 99999) {
+            spdlog::warn("[W-{}] Order failed with network error, retrying once...", wid);
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            m_order_limiter.acquire();
+            m_risk.on_order_placed();
+            resp = rest.place_futures_order(order_req, preset_tp, preset_sl);
+            m_risk.on_order_done();
+        }
+
         if (resp.status == OrderStatus::New) {
             m_orders_executed.fetch_add(1);
             m_risk.on_position_opened(sig.symbol, sig.size, side_str);
