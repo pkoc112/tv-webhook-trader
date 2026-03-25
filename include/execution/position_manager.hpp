@@ -347,8 +347,16 @@ public:
                         to_remove.push_back(key);
                         spdlog::warn("[Sync] Ghost position removed: key={} symbol={} side={} entry={:.2f} qty={:.6f}",
                             key, pos.symbol, pos.side, pos.entry_price, pos.quantity);
+                    } else {
+                        // Shadow/paper position not on exchange — auto-expire after 4 hours
+                        auto age = std::chrono::system_clock::now() - pos.opened_at;
+                        auto hours = std::chrono::duration_cast<std::chrono::hours>(age).count();
+                        if (hours >= 4) {
+                            to_remove.push_back(key);
+                            spdlog::info("[Sync] Shadow position expired ({}h): {} {} {}",
+                                hours, pos.symbol, pos.side, pos.timeframe);
+                        }
                     }
-                    // Paper/shadow positions: not on exchange is NORMAL, skip
                 }
             }
             for (auto& key : to_remove) {
