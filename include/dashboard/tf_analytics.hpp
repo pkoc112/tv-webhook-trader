@@ -174,7 +174,7 @@ private:
     }
 
     // 시간대별 승률 분석 (0~23시)
-    static nlohmann::json calc_hourly_stats(const std::vector<TradeRecord>& trades) {
+    static nlohmann::json calc_hourly_stats(const std::vector<TradeRecord>& /*trades*/) {
         // TradeRecord에 timestamp가 없으므로 간단히 TF별 집계만 반환
         // TODO: TradeRecord에 timestamp 추가 시 시간대별 분석 가능
         return nlohmann::json::object();
