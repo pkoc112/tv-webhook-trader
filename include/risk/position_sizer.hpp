@@ -33,6 +33,7 @@ struct SizeResult {
     double risk_usdt{0.0};
     double tier_multiplier{0.0};
     double drawdown_multiplier{0.0};
+    double confidence_boost{1.0};
     double final_multiplier{0.0};
     std::string reason;
 };
@@ -45,6 +46,7 @@ inline void to_json(nlohmann::json& j, const SizeResult& s) {
         {"risk_usdt", s.risk_usdt},
         {"tier_multiplier", s.tier_multiplier},
         {"drawdown_multiplier", s.drawdown_multiplier},
+        {"confidence_boost", s.confidence_boost},
         {"final_multiplier", s.final_multiplier},
         {"reason", s.reason}
     };
@@ -84,7 +86,7 @@ public:
         double balance, const std::string& symbol, double price,
         double sl_price, int leverage,
         const std::optional<SymbolScore>& score, double current_dd_pct,
-        double used_margin = 0.0) const
+        double used_margin = 0.0, double confidence_boost = 1.0) const
     {
         // 0. 가용 잔고 계산
         double available = std::max(balance - used_margin, 0.0);
@@ -160,8 +162,8 @@ public:
             method = "balance_pct";
         }
 
-        // 7. 배수 적용 (티어 × 드로다운)
-        double final_mult = tier_mult * dd_mult;
+        // 7. 배수 적용 (티어 × 드로다운 × 신뢰도)
+        double final_mult = tier_mult * dd_mult * confidence_boost;
         double final_usdt = base_usdt * final_mult;
 
         // 최소/최대 클램프
@@ -172,7 +174,7 @@ public:
         // 잔고 부족 시
         if (available < m_min_usdt) {
             return {0, 0, leverage, "insufficient", 0, 0, 0,
-                tier_mult, dd_mult, final_mult,
+                tier_mult, dd_mult, confidence_boost, final_mult,
                 "Insufficient available margin: " + fmt1(available) + " USDT"};
         }
 
@@ -191,6 +193,9 @@ public:
         if (current_dd_pct > 0) {
             reason += " | DD=" + fmt1(current_dd_pct) + "%(" + fmt2(dd_mult) + "x)";
         }
+        if (confidence_boost != 1.0) {
+            reason += " | Conf=" + fmt2(confidence_boost) + "x";
+        }
         reason += " -> " + fmt1(final_usdt) + "USDT";
 
         return {qty, std::round(final_usdt * 100.0) / 100.0,
@@ -198,7 +203,7 @@ public:
                 std::round(kelly_f * 1000000.0) / 1000000.0,
                 std::round(kelly_usdt * 100.0) / 100.0,
                 std::round(risk_usdt * 100.0) / 100.0,
-                tier_mult, dd_mult,
+                tier_mult, dd_mult, confidence_boost,
                 std::round(final_mult * 10000.0) / 10000.0,
                 reason};
     }

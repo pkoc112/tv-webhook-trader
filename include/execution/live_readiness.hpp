@@ -17,7 +17,10 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <mutex>
+#include <fstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
@@ -42,7 +45,16 @@ struct SymbolReadiness {
     double win_rate{0.0};
     double total_pnl{0.0};
     double avg_pnl{0.0};
-    std::string reason;       // Human-readable reason
+    int confidence_score{0};      // Consecutive passes (0-10)
+    double confidence_boost{1.0}; // Position sizing multiplier
+    std::string reason;           // Human-readable reason
+};
+
+// ── Confidence tracking entry (per symbol) ──
+struct ConfidenceEntry {
+    int consecutive_passes{0};   // How many consecutive rounds READY/PROVEN
+    int confidence{0};           // Capped at max_confidence
+    double size_boost{1.0};      // Position sizing multiplier
 };
 
 struct PipelineStatus {
@@ -70,7 +82,9 @@ public:
     //     "min_symbols_for_live": 5,
     //     "require_positive_pnl": true
     //   }
-    explicit LiveReadinessEngine(const nlohmann::json& config = {})
+    explicit LiveReadinessEngine(const nlohmann::json& config = {},
+                                const std::string& data_dir = "data")
+        : m_data_dir(data_dir)
     {
         auto cfg = config.value("live_readiness", nlohmann::json::object());
         m_min_trades_ready    = cfg.value("min_trades_ready", 10);
@@ -79,13 +93,17 @@ public:
         m_min_grade_proven    = cfg.value("min_grade_proven", std::string("A"));
         m_min_symbols_for_live = cfg.value("min_symbols_for_live", 5);
         m_require_positive_pnl = cfg.value("require_positive_pnl", true);
+        m_max_confidence      = cfg.value("max_confidence", 10);
+
+        load_confidence();
 
         spdlog::info("[READINESS] Initialized: min_trades_ready={}, min_trades_proven={}, "
                      "min_grade_ready={}, min_grade_proven={}, min_symbols_for_live={}, "
-                     "require_positive_pnl={}",
+                     "require_positive_pnl={}, max_confidence={}, loaded_confidence={}",
             m_min_trades_ready, m_min_trades_proven,
             m_min_grade_ready, m_min_grade_proven,
-            m_min_symbols_for_live, m_require_positive_pnl);
+            m_min_symbols_for_live, m_require_positive_pnl,
+            m_max_confidence, m_confidence.size());
     }
 
     // ================================================================
@@ -291,24 +309,65 @@ public:
     [[nodiscard]] PipelineStatus refresh_eligible(
         const nlohmann::json& futures_report,
         const nlohmann::json& spot_report,
-        std::unordered_set<std::string>& eligible_keys) const
+        std::unordered_set<std::string>& eligible_keys)
     {
         eligible_keys.clear();
         auto all = evaluate_all(futures_report, spot_report);
         auto ps = get_pipeline_status(all);
 
-        for (auto& r : all) {
-            if (r.level == ReadinessLevel::READY || r.level == ReadinessLevel::PROVEN) {
-                eligible_keys.insert(r.symbol);  // "ZBCNUSDT" 형태 (심볼만)
+        // Track confidence scores
+        {
+            std::lock_guard lock(m_conf_mtx);
+            std::unordered_set<std::string> seen;
+            for (auto& r : all) {
+                seen.insert(r.symbol);
+                auto& ce = m_confidence[r.symbol];
+                if (r.level == ReadinessLevel::READY || r.level == ReadinessLevel::PROVEN) {
+                    ce.consecutive_passes = std::min(ce.consecutive_passes + 1, m_max_confidence);
+                    eligible_keys.insert(r.symbol);
+                } else {
+                    if (ce.consecutive_passes > 0)
+                        ce.consecutive_passes--;
+                }
+                ce.confidence = ce.consecutive_passes;
+                ce.size_boost = confidence_to_boost(ce.confidence);
             }
+            // Cleanup: remove entries that are 0 and not READY
+            for (auto it = m_confidence.begin(); it != m_confidence.end(); ) {
+                if (it->second.confidence == 0 && seen.find(it->first) != seen.end()
+                    && eligible_keys.find(it->first) == eligible_keys.end()) {
+                    it = m_confidence.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            save_confidence();
         }
 
         if (ps.can_go_live) {
-            spdlog::info("[READINESS] 🟢 LIVE READY: {} READY + {} PROVEN = {} (need {})",
-                ps.ready, ps.proven, ps.ready + ps.proven, ps.min_symbols_for_live);
+            // Count confidence distribution
+            int c0=0, c1=0, c2=0, c3=0, c5=0;
+            std::lock_guard lock(m_conf_mtx);
+            for (auto& [sym, ce] : m_confidence) {
+                if (ce.confidence == 0) c0++;
+                else if (ce.confidence == 1) c1++;
+                else if (ce.confidence <= 2) c2++;
+                else if (ce.confidence <= 4) c3++;
+                else c5++;
+            }
+            spdlog::info("[READINESS] 🟢 LIVE READY: {} READY + {} PROVEN = {} (need {}) | confidence: 0:{} 1:{} 2:{} 3-4:{} 5+:{}",
+                ps.ready, ps.proven, ps.ready + ps.proven, ps.min_symbols_for_live,
+                c0, c1, c2, c3, c5);
         }
 
         return ps;
+    }
+
+    // ── Thread-safe confidence accessor ──
+    [[nodiscard]] ConfidenceEntry get_confidence(const std::string& symbol) const {
+        std::lock_guard lock(m_conf_mtx);
+        auto it = m_confidence.find(symbol);
+        return it != m_confidence.end() ? it->second : ConfidenceEntry{};
     }
 
     // ================================================================
@@ -320,6 +379,13 @@ public:
     {
         auto all = evaluate_all(futures_report, spot_report);
         auto ps = get_pipeline_status(all);
+
+        // Enrich with confidence data
+        for (auto& r : all) {
+            auto ce = get_confidence(r.symbol);
+            r.confidence_score = ce.confidence;
+            r.confidence_boost = ce.size_boost;
+        }
 
         // Separate by market
         auto futures_arr = nlohmann::json::array();
@@ -345,7 +411,9 @@ public:
                     {"level", level_to_string(r.level)},
                     {"grade", r.grade},
                     {"total_trades", r.total_trades},
-                    {"total_pnl", round4(r.total_pnl)}
+                    {"total_pnl", round4(r.total_pnl)},
+                    {"confidence_score", r.confidence_score},
+                    {"confidence_boost", round2(r.confidence_boost)}
                 });
                 count++;
             }
@@ -409,6 +477,8 @@ private:
             {"win_rate", round2(r.win_rate)},
             {"total_pnl", round4(r.total_pnl)},
             {"avg_pnl", round4(r.avg_pnl)},
+            {"confidence_score", r.confidence_score},
+            {"confidence_boost", round2(r.confidence_boost)},
             {"reason", r.reason}
         };
     }
@@ -431,6 +501,55 @@ private:
     static inline double round2(double v) { return std::round(v * 100.0) / 100.0; }
     static inline double round4(double v) { return std::round(v * 10000.0) / 10000.0; }
 
+    // ── Confidence boost lookup ──
+    double confidence_to_boost(int conf) const {
+        if (conf <= 0) return 0.75;
+        if (conf == 1) return 1.0;
+        if (conf == 2) return 1.25;
+        if (conf <= 4) return 1.5;
+        return 2.0;  // 5+
+    }
+
+    // ── Confidence persistence ──
+    void save_confidence() {
+        try {
+            nlohmann::json j;
+            for (auto& [sym, ce] : m_confidence) {
+                j[sym] = nlohmann::json{
+                    {"consecutive_passes", ce.consecutive_passes},
+                    {"confidence", ce.confidence},
+                    {"size_boost", ce.size_boost}
+                };
+            }
+            std::string path = m_data_dir + "/confidence_scores.json";
+            std::string tmp = path + ".tmp";
+            std::ofstream ofs(tmp);
+            ofs << j.dump(2);
+            ofs.close();
+            std::rename(tmp.c_str(), path.c_str());
+        } catch (const std::exception& e) {
+            spdlog::error("[READINESS] Confidence save error: {}", e.what());
+        }
+    }
+
+    void load_confidence() {
+        try {
+            std::string path = m_data_dir + "/confidence_scores.json";
+            std::ifstream ifs(path);
+            if (!ifs.good()) return;
+            auto j = nlohmann::json::parse(ifs);
+            for (auto& [sym, val] : j.items()) {
+                ConfidenceEntry ce;
+                ce.consecutive_passes = val.value("consecutive_passes", 0);
+                ce.confidence = val.value("confidence", 0);
+                ce.size_boost = val.value("size_boost", 1.0);
+                m_confidence[sym] = ce;
+            }
+        } catch (const std::exception& e) {
+            spdlog::warn("[READINESS] Confidence load failed (starting fresh): {}", e.what());
+        }
+    }
+
     // ── Config ──
     int m_min_trades_ready{10};
     int m_min_trades_proven{20};
@@ -438,6 +557,12 @@ private:
     std::string m_min_grade_proven{"A"};
     int m_min_symbols_for_live{5};
     bool m_require_positive_pnl{true};
+    int m_max_confidence{10};
+    std::string m_data_dir{"data"};
+
+    // ── Confidence state ──
+    std::unordered_map<std::string, ConfidenceEntry> m_confidence;
+    mutable std::mutex m_conf_mtx;
 };
 
 } // namespace hft

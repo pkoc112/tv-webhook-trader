@@ -129,7 +129,7 @@ public:
         , m_learner(cfg.learner)
         , m_shadow(cfg.learner)
         , m_spot_shadow(cfg.learner)
-        , m_readiness(cfg.risk_config)
+        , m_readiness(cfg.risk_config, "data")
         , m_trading(cfg.trading_config)
         , m_order_limiter(m_trading.order_rate_limit)
         , m_tpsl_limiter(m_trading.tpsl_rate_limit)
@@ -1059,7 +1059,8 @@ private:
         if (score) leverage = std::min(leverage, score->max_leverage);
 
         double sl_price = sig.has_sl() ? sig.sl : 0;
-        auto sz = m_sizer.calc_size(balance_now, sig.symbol, sig.price, sl_price, leverage, score, dd_pct, used_margin);
+        double conf_boost = m_readiness.get_confidence(sig.symbol).size_boost;
+        auto sz = m_sizer.calc_size(balance_now, sig.symbol, sig.price, sl_price, leverage, score, dd_pct, used_margin, conf_boost);
 
         if (sz.usdt_amount <= 0 || sz.qty <= 0) {
             spdlog::info("[W-{}] SKIP {}: size=0 ({})", wid, sig.symbol, sz.reason);
