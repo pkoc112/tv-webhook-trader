@@ -1,8 +1,7 @@
 [Unit]
 Description=Telegram Alert Service for tv-webhook-trader
-After=network-online.target tv-webhook-trader.service
+After=network-online.target
 Wants=network-online.target
-PartOf=tv-webhook-trader.service
 
 [Service]
 Type=simple
