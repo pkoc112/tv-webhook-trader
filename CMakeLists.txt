@@ -11,7 +11,7 @@ endif()
 
 # Cross-platform compile flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-Wall -Wextra -Wpedantic -Wshadow -Wconversion)
+    add_compile_options(-Wall -Wextra -Wpedantic -Wshadow -Wno-unused-parameter)
     set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -flto -DNDEBUG")
     set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer")
 elseif(MSVC)
