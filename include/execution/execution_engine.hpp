@@ -802,7 +802,7 @@ private:
     void process_signal(int wid, BitgetRestClient& rest, WebhookSignal&& sig) {
         auto now = now_ns();
         auto latency_ns = now - sig.received_at;
-        double latency_ms = latency_ns / 1'000'000.0;
+        double latency_ms = static_cast<double>(latency_ns) / 1'000'000.0;
         spdlog::info("[Worker-{}] {} {} {} @ {:.2f} strat={} (lat: {:.1f}ms)",
             wid, signal_type_str(sig.sig_type), sig.action, sig.symbol,
             sig.price, sig.strategy_name, latency_ms);
