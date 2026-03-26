@@ -123,7 +123,6 @@ public:
         r.avg_pnl      = entry.value("avg_pnl", 0.0);
 
         // ── Readiness decision tree ──
-        const int rank = grade_to_rank(r.grade);
         const bool pnl_ok = (r.total_pnl > 0) || !m_require_positive_pnl;
 
         // ? grade or too few trades → LEARNING
