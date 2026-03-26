@@ -112,7 +112,7 @@ public:
 
         // X티어 블랙리스트
         if (score && score->tier == "X") {
-            return {0, 0, 0, "blocked", 0, 0, 0, 0, 0, 0,
+            return {0, 0, 0, "blocked", 0, 0, 0, 0, 0, 1.0, 0,
                 "X-tier blacklisted (score: " + std::to_string(score->composite_score) + ")"};
         }
 
@@ -120,7 +120,7 @@ public:
         double dd_mult = drawdown_multiplier(current_dd_pct);
         if (dd_mult <= 0) {
             return {0, 0, leverage, "dd_stop", 0, 0, 0,
-                tier_mult, 0, 0,
+                tier_mult, 0, 1.0, 0,
                 "Drawdown " + std::to_string(current_dd_pct) + "% -> trading halted"};
         }
 
