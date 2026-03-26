@@ -316,7 +316,7 @@ private:
     }
 
     // ── 등급 계산 ──
-    static std::string compute_grade(int total, int wins, double total_pnl, double wr) {
+    static std::string compute_grade(int total, int /*wins*/, double total_pnl, double wr) {
         if (total < 5) return "?";           // 데이터 부족
         if (wr >= 65.0 && total_pnl > 0) return "A+";
         if (wr >= 55.0 && total_pnl > 0) return "A";
