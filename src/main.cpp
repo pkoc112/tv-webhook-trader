@@ -256,7 +256,7 @@ int main(int argc, char* argv[]) {
         exec_engine.start();
 
         // -- 7. 대시보드 서버 (HTTP) --
-        uint16_t dash_port = config.value("dashboard_port", 5000);
+        uint16_t dash_port = static_cast<uint16_t>(config.value("dashboard_port", 5000));
         hft::DashboardCallbacks dash_cb{
             .get_stats = [&exec_engine]() { return exec_engine.get_stats(); },
             .get_risk_status = [&exec_engine, &portfolio_risk, &scorer]() {
