@@ -17,7 +17,7 @@
             "S": 75, "A": 60, "B": 45, "C": 30, "D": 15
         },
         "tier_size_multiplier": {
-            "S": 1.5, "A": 1.2, "B": 1.0, "C": 1.0, "D": 0.5, "X": 0.0
+            "S": 1.5, "A": 1.2, "B": 1.0, "C": 0.8, "D": 0.0, "X": 0.0
         },
         "tier_max_leverage": {
             "S": 20, "A": 15, "B": 10, "C": 7, "D": 0, "X": 0
@@ -65,10 +65,10 @@
         "max_same_direction": 10,
         "max_positions_total": 20,
         "max_positions_per_tf": {
-            "1": 5, "5": 8, "15": 8, "30": 6, "60": 5, "240": 3
+            "1": 5, "5": 8, "15": 4, "30": 6, "60": 5, "240": 3
         },
         "tf_exposure_pct": {
-            "1": 15, "5": 25, "15": 25, "30": 20, "60": 20, "240": 15
+            "1": 15, "5": 25, "15": 15, "30": 20, "60": 25, "240": 20
         },
         "correlation_factor": 0.7,
         "max_correlated_risk_pct": 50.0,
@@ -90,10 +90,33 @@
         "live_min_tier": "B"
     },
 
+    "learner": {
+        "enabled": true,
+        "min_trades_filter": 10,
+        "blacklist_min_trades": 8,
+        "blacklist_win_rate": 0.30,
+        "cooldown_consecutive_losses": 3,
+        "cooldown_minutes": 30,
+        "min_trades_quality": 8,
+        "quality_skip_threshold": 0.25,
+        "kelly_min_trades": 20,
+        "kelly_fraction_cap": 0.25
+    },
+
+    "live_readiness": {
+        "min_trades_ready": 15,
+        "min_trades_proven": 25,
+        "min_grade_ready": "B",
+        "min_grade_proven": "A",
+        "min_symbols_for_live": 3,
+        "require_positive_pnl": true,
+        "max_confidence": 10
+    },
+
     "tf_filters": {
         "1":   {"size_multiplier": 0.7, "min_tier": "C", "min_tp_to_cost_ratio": 2.0, "block_reverse": true},
         "5":   {"size_multiplier": 1.0, "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": true},
-        "15":  {"size_multiplier": 1.0, "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": true},
+        "15":  {"size_multiplier": 0.5, "min_tier": "B", "min_tp_to_cost_ratio": 2.0, "block_reverse": true},
         "30":  {"size_multiplier": 1.0, "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": false},
         "60":  {"size_multiplier": 1.0, "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": false},
         "240": {"size_multiplier": 1.0, "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": false}
