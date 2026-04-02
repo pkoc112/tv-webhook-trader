@@ -166,13 +166,13 @@ public:
         double final_mult = tier_mult * dd_mult * confidence_boost;
         double final_usdt = base_usdt * final_mult;
 
-        // 최소/최대 클램프
-        final_usdt = std::max(final_usdt, m_min_usdt);
-        final_usdt = std::min(final_usdt, available * m_max_pct);  // 가용 잔고 초과 불가
-        final_usdt = std::min(final_usdt, m_max_usdt_hard);        // 절대 한도
+        // 최소/최대 클램프 (상한 먼저 적용, 하한은 상한 이내에서만)
+        double cap = std::min(available * m_max_pct, m_max_usdt_hard);
+        final_usdt = std::min(final_usdt, cap);
+        final_usdt = std::max(final_usdt, std::min(m_min_usdt, cap)); // 하한이 상한 초과하지 않도록
 
-        // 잔고 부족 시
-        if (available < m_min_usdt) {
+        // 잔고 부족 시 (최소 노셔널 불가)
+        if (final_usdt < m_min_usdt || available < m_min_usdt) {
             return {0, 0, leverage, "insufficient", 0, 0, 0,
                 tier_mult, dd_mult, confidence_boost, final_mult,
                 "Insufficient available margin: " + fmt1(available) + " USDT"};

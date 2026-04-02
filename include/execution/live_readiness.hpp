@@ -502,11 +502,11 @@ private:
 
     // ── Confidence boost lookup ──
     double confidence_to_boost(int conf) const {
-        if (conf <= 0) return 0.75;
+        if (conf <= 0) return 0.9;
         if (conf == 1) return 1.0;
-        if (conf == 2) return 1.25;
-        if (conf <= 4) return 1.5;
-        return 2.0;  // 5+
+        if (conf == 2) return 1.05;
+        if (conf <= 4) return 1.1;
+        return 1.15;  // 5+ (conservative, was 2.0x)
     }
 
     // ── Confidence persistence ──
