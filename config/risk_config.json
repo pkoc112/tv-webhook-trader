@@ -17,21 +17,21 @@
             "S": 75, "A": 60, "B": 45, "C": 30, "D": 15
         },
         "tier_size_multiplier": {
-            "S": 1.5, "A": 1.2, "B": 1.0, "C": 0.8, "D": 0.0, "X": 0.0
+            "S": 1.5, "A": 1.2, "B": 1.0, "C": 0.0, "D": 0.0, "X": 0.0
         },
         "tier_max_leverage": {
-            "S": 20, "A": 15, "B": 10, "C": 7, "D": 0, "X": 0
+            "S": 5, "A": 5, "B": 3, "C": 0, "D": 0, "X": 0
         }
     },
 
     "position_sizing": {
         "method": "dynamic_balance_pct",
-        "kelly_fraction": 0.25,
-        "max_risk_per_trade_pct": 2.0,
+        "kelly_fraction": 0.0,
+        "max_risk_per_trade_pct": 1.0,
         "min_trade_usdt": 5.0,
-        "max_trade_usdt": 50.0,
-        "base_trade_pct": 3.0,
-        "max_trade_pct": 8.0,
+        "max_trade_usdt": 20.0,
+        "base_trade_pct": 2.0,
+        "max_trade_pct": 5.0,
         "drawdown_levels": [
             {"threshold": 10.0,  "multiplier": 1.0},
             {"threshold": 25.0,  "multiplier": 0.75},
@@ -61,9 +61,9 @@
     },
 
     "portfolio_risk": {
-        "max_concurrent_positions": 15,
-        "max_same_direction": 10,
-        "max_positions_total": 20,
+        "max_concurrent_positions": 5,
+        "max_same_direction": 3,
+        "max_positions_total": 8,
         "max_positions_per_tf": {
             "1": 5, "5": 8, "15": 4, "30": 6, "60": 5, "240": 3
         },
@@ -99,8 +99,8 @@
         "cooldown_minutes": 30,
         "min_trades_quality": 8,
         "quality_skip_threshold": 0.25,
-        "kelly_min_trades": 20,
-        "kelly_fraction_cap": 0.25
+        "kelly_min_trades": 50,
+        "kelly_fraction_cap": 0.0
     },
 
     "live_readiness": {
@@ -114,11 +114,11 @@
     },
 
     "tf_filters": {
-        "1":   {"size_multiplier": 0.7, "min_tier": "C", "min_tp_to_cost_ratio": 2.0, "block_reverse": true},
-        "5":   {"size_multiplier": 1.0, "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": true},
+        "1":   {"size_multiplier": 0.5, "min_tier": "B", "min_tp_to_cost_ratio": 2.5, "block_reverse": true},
+        "5":   {"size_multiplier": 0.8, "min_tier": "B", "min_tp_to_cost_ratio": 2.0, "block_reverse": true},
         "15":  {"size_multiplier": 0.5, "min_tier": "B", "min_tp_to_cost_ratio": 2.0, "block_reverse": true},
-        "30":  {"size_multiplier": 1.0, "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": false},
-        "60":  {"size_multiplier": 1.0, "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": false},
-        "240": {"size_multiplier": 1.0, "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": false}
+        "30":  {"size_multiplier": 1.0, "min_tier": "B", "min_tp_to_cost_ratio": 1.5, "block_reverse": false},
+        "60":  {"size_multiplier": 1.2, "min_tier": "B", "min_tp_to_cost_ratio": 1.5, "block_reverse": false},
+        "240": {"size_multiplier": 1.2, "min_tier": "B", "min_tp_to_cost_ratio": 1.5, "block_reverse": false}
     }
 }
