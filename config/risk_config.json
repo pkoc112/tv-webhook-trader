@@ -104,8 +104,8 @@
     },
 
     "live_readiness": {
-        "min_trades_ready": 15,
-        "min_trades_proven": 25,
+        "min_trades_ready": 30,
+        "min_trades_proven": 40,
         "min_grade_ready": "B",
         "min_grade_proven": "A",
         "min_symbols_for_live": 3,

@@ -922,7 +922,8 @@ private:
         }
 
         // 1. 티어 체크 — Shadow vs Live 모드 분기
-        //    ★ auto-live 모드에서는 eligible 심볼이면 tier 체크 bypass
+        //    ★ FIX: eligible은 "후보"일 뿐, 모든 안전 게이트를 통과해야 함
+        //    eligible이어도 tier/grade/learner 체크를 bypass하지 않음
         std::string tier = m_scorer.get_tier(sig.symbol);
         bool is_eligible = false;
         if (m_auto_live_active.load()) {
@@ -933,27 +934,26 @@ private:
         if (m_trading.shadow_mode) {
             // Shadow 모드: 모든 티어 허용 (학습 데이터 수집)
             spdlog::debug("[W-{}] SHADOW {} tier={} (all tiers allowed)", wid, sig.symbol, tier);
-        } else if (is_eligible) {
-            // Auto-live eligible 심볼: tier 체크 bypass (readiness grade로 이미 검증됨)
-            spdlog::info("[W-{}] ELIGIBLE {} tier={} (auto-live bypass, readiness approved)",
-                wid, sig.symbol, tier);
         } else {
-            // Live 모드 (non-eligible): 학습 검증된 심볼만 실전 매매
+            // Live 모드: eligible 포함 모든 심볼에 tier 체크 적용
             std::string live_min = m_port_risk.get_live_min_tier();
             if (!tier_meets_min(tier, live_min)) {
-                spdlog::info("[W-{}] SKIP {}: tier {} < live_min {} (unproven symbol)",
-                    wid, sig.symbol, tier, live_min);
+                spdlog::info("[W-{}] SKIP {}: tier {} < live_min {} ({})",
+                    wid, sig.symbol, tier, live_min,
+                    is_eligible ? "eligible but tier too low" : "unproven symbol");
                 m_risk_skips.fetch_add(1);
                 return;
+            }
+            if (is_eligible) {
+                spdlog::info("[W-{}] ELIGIBLE {} tier={} (candidate, passed tier check)",
+                    wid, sig.symbol, tier);
             }
         }
 
         // 1.2. ★ Shadow Tracker 등급 필터 — 가상 추적 성적 기반
         // Shadow에서 충분한 데이터(5거래+)가 쌓이고 등급이 C 이하면 진입 차단
-        // ★ auto-live eligible 심볼은 readiness에서 이미 검증됨 → bypass
-        if (is_eligible) {
-            spdlog::debug("[W-{}] SHADOW_GRADE bypass {} (eligible)", wid, sig.symbol);
-        } else {
+        // ★ FIX: eligible 심볼도 동일하게 grade 필터 적용 (bypass 제거)
+        {
             auto shadow_report = m_shadow.get_symbol_report();
             for (auto& sr : shadow_report) {
                 if (sr.value("symbol", "") == sig.symbol) {
@@ -967,25 +967,28 @@ private:
                             wid, sig.symbol, total);
                     } else if (grade == "F" || grade == "D") {
                         // F/D 등급 — 차단
-                        spdlog::info("[W-{}] SHADOW_SKIP {}: grade={} total={} pnl={:.4f} (poor quality)",
-                            wid, sig.symbol, grade, total, pnl);
+                        spdlog::info("[W-{}] SHADOW_SKIP {}: grade={} total={} pnl={:.4f} (poor quality{})",
+                            wid, sig.symbol, grade, total, pnl,
+                            is_eligible ? ", was eligible" : "");
                         m_risk_skips.fetch_add(1);
                         return;
                     } else if (grade == "C" && total >= 10) {
                         // C 등급, 10거래 이상이면 차단 (충분히 검증된 C)
-                        spdlog::info("[W-{}] SHADOW_SKIP {}: grade={} total={} pnl={:.4f} (marginal, blocked)",
-                            wid, sig.symbol, grade, total, pnl);
+                        spdlog::info("[W-{}] SHADOW_SKIP {}: grade={} total={} pnl={:.4f} (marginal, blocked{})",
+                            wid, sig.symbol, grade, total, pnl,
+                            is_eligible ? ", was eligible" : "");
                         m_risk_skips.fetch_add(1);
                         return;
                     } else {
                         // A+, A, B 또는 초기 C — 허용
-                        spdlog::info("[W-{}] SHADOW_OK {}: grade={} total={} pnl={:.4f}",
-                            wid, sig.symbol, grade, total, pnl);
+                        spdlog::info("[W-{}] SHADOW_OK {}: grade={} total={} pnl={:.4f}{}",
+                            wid, sig.symbol, grade, total, pnl,
+                            is_eligible ? " (eligible)" : "");
                     }
                     break;
                 }
             }
-        } // end shadow grade filter (is_eligible else block)
+        } // end shadow grade filter
 
         // 1.5. 학습 엔진 판단 (L1~L4)
         int current_hour_utc = -1;
@@ -1016,7 +1019,8 @@ private:
                 m_risk_skips.fetch_add(1);
                 return;
             }
-            if (!m_trading.shadow_mode && !is_eligible && !tier_meets_min(tier, filt.min_tier)) {
+            // ★ FIX: eligible 심볼도 TF별 tier 체크 적용 (bypass 제거)
+            if (!m_trading.shadow_mode && !tier_meets_min(tier, filt.min_tier)) {
                 spdlog::info("[W-{}] SKIP {}: tier {} < {} for TF {}",
                     wid, sig.symbol, tier, filt.min_tier, tf);
                 m_risk_skips.fetch_add(1);
@@ -1025,6 +1029,18 @@ private:
         }
 
         // 3. 수수료 수익성 (shadow 모드에서는 로그만, 차단 안 함)
+        // ★ FIX: Live 모드에서 TP1 없으면 거래 차단 (리스크 제한 불가)
+        //    Shadow 모드에서는 허용 (학습용)
+        {
+            bool is_live_trade = !m_trading.shadow_mode &&
+                !(m_auto_live_active.load() && !is_eligible);
+            if (is_live_trade && (!sig.has_tp1() || sig.tp1 <= 0)) {
+                spdlog::info("[W-{}] SKIP {}: No TP1 for live trade (risk undefined)",
+                    wid, sig.symbol);
+                m_risk_skips.fetch_add(1);
+                return;
+            }
+        }
         if (sig.has_tp1() && sig.price > 0) {
             double custom_ratio = 0;
             if (tf_it != m_trading.tf_filters.end())

@@ -55,6 +55,13 @@ struct ConfidenceEntry {
     int consecutive_passes{0};   // How many consecutive rounds READY/PROVEN
     int confidence{0};           // Capped at max_confidence
     double size_boost{1.0};      // Position sizing multiplier
+
+    // ★ Walk-forward demotion: rolling window of last 20 trades
+    static constexpr int ROLLING_WINDOW = 20;
+    double rolling_pnl{0.0};     // Sum of PnL for last N trades
+    double rolling_wr{0.0};      // Win rate for last N trades
+    int rolling_count{0};        // Number of trades in rolling window
+    bool demoted{false};         // Was demoted in current cycle
 };
 
 struct PipelineStatus {
@@ -153,17 +160,35 @@ public:
             return r;
         }
 
+        // ★ FIX: Tier cap for small samples — prevents premature promotion
+        // Regardless of grade, small sample sizes cap the maximum readiness level
+        // trades < 15 → max PROMISING (was: could reach READY with 5 trades)
+        // trades < 25 → max PROMISING for B-grade (can't reach READY)
+        const bool small_sample_cap_c = r.total_trades < 15;  // max tier = C equivalent
+        const bool small_sample_cap_b = r.total_trades < 25;  // max tier = B equivalent
+
         // A+ or A grade
         if (r.grade == "A+" || r.grade == "A") {
-            if (r.total_trades >= m_min_trades_proven && pnl_ok) {
+            if (small_sample_cap_c) {
+                // ★ FIX: Too few trades for any promotion, even with A grade
+                r.level = ReadinessLevel::PROMISING;
+                r.reason = "Grade " + r.grade + " but only " +
+                    std::to_string(r.total_trades) + " trades (<15, small sample cap)";
+            } else if (r.total_trades >= m_min_trades_proven && pnl_ok) {
                 r.level = ReadinessLevel::PROVEN;
                 r.reason = "Grade " + r.grade + " with " +
                     std::to_string(r.total_trades) + " trades - high confidence";
-            } else if (pnl_ok) {
+            } else if (r.total_trades >= m_min_trades_ready && pnl_ok) {
+                // ★ FIX: READY requires min_trades_ready (30), not just positive PnL
                 r.level = ReadinessLevel::READY;
                 r.reason = "Grade " + r.grade + " with " +
                     std::to_string(r.total_trades) + " trades (need " +
                     std::to_string(m_min_trades_proven) + " for PROVEN)";
+            } else if (pnl_ok) {
+                r.level = ReadinessLevel::PROMISING;
+                r.reason = "Grade " + r.grade + " with " +
+                    std::to_string(r.total_trades) + " trades (need " +
+                    std::to_string(m_min_trades_ready) + " for READY)";
             } else {
                 r.level = ReadinessLevel::PROMISING;
                 r.reason = "Grade " + r.grade + " but negative PnL - keep watching";
@@ -173,7 +198,12 @@ public:
 
         // B grade
         if (r.grade == "B") {
-            if (r.total_trades >= m_min_trades_ready && pnl_ok) {
+            if (small_sample_cap_c) {
+                // ★ FIX: <15 trades with B grade → capped at PROMISING
+                r.level = ReadinessLevel::PROMISING;
+                r.reason = "Grade B but only " + std::to_string(r.total_trades) +
+                    " trades (<15, small sample cap)";
+            } else if (r.total_trades >= m_min_trades_ready && pnl_ok) {
                 r.level = ReadinessLevel::READY;
                 r.reason = "Grade B with " + std::to_string(r.total_trades) +
                     " trades and positive PnL - ready for live";
@@ -314,16 +344,72 @@ public:
         auto all = evaluate_all(futures_report, spot_report);
         auto ps = get_pipeline_status(all);
 
-        // Track confidence scores
+        // Track confidence scores + walk-forward demotion
         {
             std::lock_guard lock(m_conf_mtx);
             std::unordered_set<std::string> seen;
+
+            // ★ Build rolling stats from report data (last N trades)
+            // The report entries contain total trades, wins, total_pnl
+            // We use these as proxy for rolling performance
+            auto build_rolling = [](const nlohmann::json& report,
+                                    std::unordered_map<std::string, ConfidenceEntry>& conf) {
+                for (auto& entry : report) {
+                    std::string sym = entry.value("symbol", "");
+                    if (sym.empty()) continue;
+                    auto& ce = conf[sym];
+                    // Use recent_trades/recent_wins/recent_pnl if available,
+                    // otherwise fall back to total stats as approximation
+                    int recent_n = entry.value("recent_trades", entry.value("total", 0));
+                    int recent_wins = entry.value("recent_wins", entry.value("wins", 0));
+                    double recent_pnl = entry.value("recent_pnl", entry.value("total_pnl", 0.0));
+                    // Cap to rolling window size
+                    ce.rolling_count = std::min(recent_n, ConfidenceEntry::ROLLING_WINDOW);
+                    ce.rolling_pnl = recent_pnl;
+                    ce.rolling_wr = ce.rolling_count > 0
+                        ? static_cast<double>(std::min(recent_wins, ce.rolling_count)) / ce.rolling_count
+                        : 0.0;
+                }
+            };
+            build_rolling(futures_report, m_confidence);
+            build_rolling(spot_report, m_confidence);
+
             for (auto& r : all) {
                 seen.insert(r.symbol);
                 auto& ce = m_confidence[r.symbol];
+                ce.demoted = false;
+
                 if (r.level == ReadinessLevel::READY || r.level == ReadinessLevel::PROVEN) {
-                    ce.consecutive_passes = std::min(ce.consecutive_passes + 1, m_max_confidence);
-                    eligible_keys.insert(r.symbol);
+                    // ★ Walk-forward demotion: check rolling window before accepting
+                    bool should_demote = false;
+                    std::string demote_reason;
+                    if (ce.rolling_count >= ConfidenceEntry::ROLLING_WINDOW) {
+                        if (ce.rolling_pnl < 0) {
+                            should_demote = true;
+                            demote_reason = "rolling_pnl < 0 over last " +
+                                std::to_string(ConfidenceEntry::ROLLING_WINDOW) + " trades";
+                        } else if (ce.rolling_wr < 0.40) {
+                            should_demote = true;
+                            demote_reason = "rolling_wr=" +
+                                std::to_string(static_cast<int>(ce.rolling_wr * 100)) +
+                                "% < 40% over last " +
+                                std::to_string(ConfidenceEntry::ROLLING_WINDOW) + " trades";
+                        }
+                    }
+
+                    if (should_demote) {
+                        // Demote: READY/PROVEN → PROMISING, reset confidence
+                        ce.consecutive_passes = 0;
+                        ce.confidence = 0;
+                        ce.size_boost = confidence_to_boost(0);
+                        ce.demoted = true;
+                        spdlog::warn("[READINESS] DEMOTE {} from {} to PROMISING: {}",
+                            r.symbol, level_to_string(r.level), demote_reason);
+                        // Do NOT add to eligible_keys (demoted)
+                    } else {
+                        ce.consecutive_passes = std::min(ce.consecutive_passes + 1, m_max_confidence);
+                        eligible_keys.insert(r.symbol);
+                    }
                 } else {
                     if (ce.consecutive_passes > 0)
                         ce.consecutive_passes--;
@@ -517,7 +603,10 @@ private:
                 j[sym] = nlohmann::json{
                     {"consecutive_passes", ce.consecutive_passes},
                     {"confidence", ce.confidence},
-                    {"size_boost", ce.size_boost}
+                    {"size_boost", ce.size_boost},
+                    {"rolling_pnl", ce.rolling_pnl},
+                    {"rolling_wr", ce.rolling_wr},
+                    {"rolling_count", ce.rolling_count}
                 };
             }
             std::string path = m_data_dir + "/confidence_scores.json";
@@ -542,6 +631,9 @@ private:
                 ce.consecutive_passes = val.value("consecutive_passes", 0);
                 ce.confidence = val.value("confidence", 0);
                 ce.size_boost = val.value("size_boost", 1.0);
+                ce.rolling_pnl = val.value("rolling_pnl", 0.0);
+                ce.rolling_wr = val.value("rolling_wr", 0.0);
+                ce.rolling_count = val.value("rolling_count", 0);
                 m_confidence[sym] = ce;
             }
         } catch (const std::exception& e) {

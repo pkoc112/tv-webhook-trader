@@ -370,8 +370,14 @@ private:
                         wr_s * m_w_wr + con_s * m_w_con + fq_s * m_w_fq;
             composite = std::clamp(composite, 0.0, 100.0);
         } else {
+            // ★ FIX: Bayesian shrinkage for small samples
+            // Pulls score toward prior (35.0) proportional to sample size confidence
+            // sample_conf = n/(n+20) → approaches 1.0 as n grows
             if (n > 0) {
-                composite = 30.0 + (wr - 0.33) * 50.0;
+                double raw_score = 30.0 + (wr - 0.33) * 50.0;
+                raw_score = std::clamp(raw_score, 15.0, 55.0);
+                double sample_conf = static_cast<double>(n) / (static_cast<double>(n) + 20.0);
+                composite = 35.0 * (1.0 - sample_conf) + raw_score * sample_conf;
                 composite = std::clamp(composite, 15.0, 55.0);
             } else {
                 composite = 35.0;
