@@ -117,8 +117,8 @@
         "1":   {"size_multiplier": 0.5, "min_tier": "B", "min_tp_to_cost_ratio": 2.5, "block_reverse": true},
         "5":   {"size_multiplier": 0.8, "min_tier": "C", "min_tp_to_cost_ratio": 2.0, "block_reverse": true},
         "15":  {"size_multiplier": 0.5, "min_tier": "C", "min_tp_to_cost_ratio": 2.0, "block_reverse": true},
-        "30":  {"size_multiplier": 1.0, "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": false},
-        "60":  {"size_multiplier": 1.0, "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": false},
-        "240": {"size_multiplier": 1.0, "min_tier": "C", "min_tp_to_cost_ratio": 1.5, "block_reverse": false}
+        "30":  {"size_multiplier": 1.0, "min_tier": "C", "min_tp_to_cost_ratio": 2.0, "block_reverse": false},
+        "60":  {"size_multiplier": 1.0, "min_tier": "C", "min_tp_to_cost_ratio": 2.0, "block_reverse": false},
+        "240": {"size_multiplier": 1.0, "min_tier": "C", "min_tp_to_cost_ratio": 2.0, "block_reverse": false}
     }
 }
