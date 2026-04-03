@@ -155,7 +155,55 @@ daily_report() {
     fi
 }
 
-# ── 4. 로그 로테이션 (1MB 초과 시) ──
+# ── 4. 킬 스위치 (긴급 거래 중단) ──
+# 일일 손실 한도 초과, 비정상 드로다운, 급격한 잔고 감소 감지
+KILL_SWITCH_FILE="/home/ubuntu/tv-webhook-trader/data/kill_switch"
+check_kill_switch() {
+    # 킬스위치 파일이 있으면 서비스 중지 유지
+    if [ -f "$KILL_SWITCH_FILE" ]; then
+        if systemctl is-active --quiet "$SERVICE"; then
+            log "KILL SWITCH ACTIVE: Stopping service"
+            sudo systemctl stop "$SERVICE"
+            send_telegram "🛑 <b>킬 스위치 활성!</b>
+kill_switch 파일 감지. 서비스 중지됨.
+수동 해제: rm $KILL_SWITCH_FILE"
+        fi
+        return
+    fi
+
+    # API에서 리스크 상태 확인
+    local risk
+    risk=$(curl -s --max-time 5 -H "$AUTH_HEADER" "$API_URL/risk/status" 2>/dev/null || echo "{}")
+
+    if [ "$risk" = "{}" ]; then
+        return  # API 응답 없으면 스킵
+    fi
+
+    local dd=$(echo "$risk" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('portfolio',{}).get('current_drawdown_pct',0))" 2>/dev/null || echo "0")
+    local cb=$(echo "$risk" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('portfolio',{}).get('circuit_breaker_active',False))" 2>/dev/null || echo "False")
+
+    # 드로다운 30% 초과 → 긴급 정지
+    if [ "$(echo "$dd > 30" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
+        log "KILL SWITCH TRIGGERED: Drawdown ${dd}% > 30%"
+        echo "DD_${dd}_$(date '+%Y%m%d_%H%M%S')" > "$KILL_SWITCH_FILE"
+        sudo systemctl stop "$SERVICE"
+        send_telegram "🛑🛑 <b>긴급 정지!</b>
+드로다운 ${dd}% (한도 30% 초과)
+서비스가 자동 중지되었습니다.
+재개: rm $KILL_SWITCH_FILE 후 systemctl start"
+        return
+    fi
+
+    # 서킷브레이커 발동 알림
+    if [ "$cb" = "True" ]; then
+        log "WARN: Circuit breaker active"
+        send_telegram "⚠️ <b>서킷브레이커 발동!</b>
+일일/주간 손실 한도에 도달.
+자동 쿨다운 중 (60분)."
+    fi
+}
+
+# ── 5. 로그 로테이션 (1MB 초과 시) ──
 rotate_log() {
     if [ -f "$LOGFILE" ]; then
         local size=$(stat -f%z "$LOGFILE" 2>/dev/null || stat -c%s "$LOGFILE" 2>/dev/null || echo 0)
@@ -169,6 +217,7 @@ rotate_log() {
 # ── 메인 ──
 mkdir -p "$(dirname "$LOGFILE")"
 rotate_log
+check_kill_switch
 check_trader
 check_telegram
 daily_report
