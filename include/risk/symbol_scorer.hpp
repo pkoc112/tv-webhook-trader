@@ -375,19 +375,12 @@ public:
                     1.0 - std::abs(1.0 - ratio), 0.0, 1.0);
             }
 
-            // If 10+ realized trades, adjust composite score to weight realized data
-            if (acc.count >= 10) {
-                // Blend: 60% original composite + 25% net_expectancy + 15% realized_rr_avg
-                double net_exp_score = normalize(score.net_expectancy_per_trade, -0.05, 0.15) * 100.0;
-                double rr_score = normalize(score.avg_realized_rr, 0.0, 3.0) * 100.0;
-                double blended = score.composite_score * 0.60
-                               + net_exp_score * 0.25
-                               + rr_score * 0.15;
-                score.composite_score = round1(std::clamp(blended, 0.0, 100.0));
-                score.tier = assign_tier(score.composite_score);
-                score.size_multiplier = size_mult_for(score.tier);
-                score.max_leverage = max_lev_for(score.tier);
-            }
+            // GPT review: realized RR blending disabled for live scoring.
+            // Metrics are tracked (shadow observation) but do NOT modify
+            // composite_score/tier/size_multiplier. Too few data points at
+            // current stage — blending would chase recent noise, not edge.
+            // TODO: Re-enable when 100+ realized trades confirm stable pattern.
+            // if (acc.count >= 10) { ... blending logic ... }
 
             save_context_scores_locked();
         }
