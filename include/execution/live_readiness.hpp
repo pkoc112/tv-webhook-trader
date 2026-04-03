@@ -448,10 +448,59 @@ public:
         return ps;
     }
 
+    // ================================================================
+    // Enrich eligible keys with context-level granularity (symbol:tf:dir)
+    // ================================================================
+    // Call AFTER refresh_eligible(). Evaluates TF-level shadow reports and
+    // adds "SYMBOL:TF:DIRECTION" context keys to eligible_keys for entries
+    // that individually qualify as READY or PROVEN.
+    //
+    // This enables the execution engine to make context-aware decisions:
+    // e.g., BTCUSDT:15:long may be READY while BTCUSDT:15:short is BLOCKED.
+    // ================================================================
+    void enrich_eligible_with_context(
+        const nlohmann::json& futures_tf_report,
+        const nlohmann::json& spot_tf_report,
+        std::unordered_set<std::string>& eligible_keys)
+    {
+        auto process_report = [&](const nlohmann::json& report, const std::string& market) {
+            for (auto& entry : report) {
+                std::string symbol = entry.value("symbol", "");
+                std::string tf = entry.value("timeframe", "");
+                if (symbol.empty() || tf.empty()) continue;
+
+                auto r = evaluate_symbol(entry, market);
+                if (r.level == ReadinessLevel::READY || r.level == ReadinessLevel::PROVEN) {
+                    // Build context keys for both directions
+                    // The TF report doesn't split by direction, so we add
+                    // the symbol:tf prefix -- the execution engine will also
+                    // check symbol-level eligibility as fallback
+                    std::string ctx_long  = symbol + ":" + tf + ":long";
+                    std::string ctx_short = symbol + ":" + tf + ":short";
+                    eligible_keys.insert(ctx_long);
+                    eligible_keys.insert(ctx_short);
+
+                    // Also track confidence at context level
+                    std::lock_guard lock(m_conf_mtx);
+                    for (const auto& ctx : {ctx_long, ctx_short}) {
+                        auto& ce = m_confidence[ctx];
+                        ce.consecutive_passes = std::min(ce.consecutive_passes + 1, m_max_confidence);
+                        ce.confidence = ce.consecutive_passes;
+                        ce.size_boost = confidence_to_boost(ce.confidence);
+                    }
+                }
+            }
+        };
+
+        process_report(futures_tf_report, "futures");
+        process_report(spot_tf_report, "spot");
+    }
+
     // ── Thread-safe confidence accessor ──
-    [[nodiscard]] ConfidenceEntry get_confidence(const std::string& symbol) const {
+    // Works with both symbol keys ("BTCUSDT") and context keys ("BTCUSDT:15:long")
+    [[nodiscard]] ConfidenceEntry get_confidence(const std::string& key) const {
         std::lock_guard lock(m_conf_mtx);
-        auto it = m_confidence.find(symbol);
+        auto it = m_confidence.find(key);
         return it != m_confidence.end() ? it->second : ConfidenceEntry{};
     }
 

@@ -219,9 +219,128 @@ public:
         m_rescore_hours = cfg.value("rescore_interval_hours", 6);
 
         load_scores();
+        load_context_scores();
     }
 
     // ── Public API ──
+
+    // ========================================================================
+    // Context Key System (Phase 1)
+    // ========================================================================
+    // Instead of one score per symbol, we also track scores per "context key":
+    //   context_key = "SYMBOL:TIMEFRAME:DIRECTION"
+    //   e.g., "BTCUSDT:15:long", "ETHUSDT:60:short"
+    //
+    // The same symbol can perform very differently across timeframes and
+    // directions. Context scoring enables fine-grained risk management.
+    //
+    // Fallback: if no context data exists (or insufficient trades), the
+    // system falls back to the existing symbol-level aggregate score.
+    // ========================================================================
+
+    /// Build a context key from components: "SYMBOL:TF:DIR"
+    /// Direction should be "long" or "short". TF is the raw timeframe string.
+    static std::string compute_context_key(const std::string& symbol,
+                                           const std::string& timeframe,
+                                           const std::string& direction) {
+        std::string tf = timeframe.empty() ? "unknown" : timeframe;
+        std::string dir = direction.empty() ? "unknown" : direction;
+        return symbol + ":" + tf + ":" + dir;
+    }
+
+    /// Get score for a specific context (symbol x timeframe x direction).
+    /// Returns nullopt if context data is missing or insufficient; caller
+    /// should fall back to get_score(symbol).
+    [[nodiscard]] std::optional<SymbolScore> get_context_score(
+        const std::string& symbol,
+        const std::string& timeframe,
+        const std::string& direction) const
+    {
+        std::string key = compute_context_key(symbol, timeframe, direction);
+        std::lock_guard lock(m_mtx);
+        auto it = m_context_scores.find(key);
+        if (it != m_context_scores.end()) return it->second;
+        return std::nullopt;
+    }
+
+    /// Record a single completed trade into the per-context accumulator.
+    /// Call this when a trade closes (TP/SL hit, manual close, etc.).
+    /// The context score is recomputed incrementally from accumulated stats.
+    void record_context_trade(const std::string& symbol,
+                              const std::string& timeframe,
+                              const std::string& direction,
+                              double pnl, bool is_win)
+    {
+        std::string key = compute_context_key(symbol, timeframe, direction);
+        std::lock_guard lock(m_mtx);
+
+        auto& score = m_context_scores[key];
+        score.symbol = key;  // context key as identifier
+        score.total_trades++;
+        if (is_win) score.wins++;
+        score.losses = score.total_trades - score.wins;
+        score.total_pnl += pnl;
+        score.win_rate = score.total_trades > 0
+            ? static_cast<double>(score.wins) / score.total_trades : 0.0;
+        score.avg_pnl = score.total_trades > 0
+            ? score.total_pnl / score.total_trades : 0.0;
+
+        // Recompute tier and composite for context score
+        score.data_sufficient = score.total_trades >= m_min_trades;
+        if (score.total_trades > 0) {
+            // Simplified composite: Bayesian shrinkage for small samples
+            double raw_score = 30.0 + (score.win_rate - 0.33) * 50.0;
+            raw_score = std::clamp(raw_score, 15.0, 55.0);
+            double sample_conf = static_cast<double>(score.total_trades)
+                / (static_cast<double>(score.total_trades) + 20.0);
+            score.composite_score = round1(
+                35.0 * (1.0 - sample_conf) + raw_score * sample_conf);
+            score.composite_score = std::clamp(score.composite_score, 0.0, 100.0);
+        } else {
+            score.composite_score = 35.0;
+        }
+        score.tier = assign_tier(score.composite_score);
+        score.size_multiplier = size_mult_for(score.tier);
+        score.max_leverage = max_lev_for(score.tier);
+        score.last_updated = current_iso_time();
+
+        save_context_scores_locked();
+
+        spdlog::debug("[SCORER] Context trade recorded: {} trades={} wr={:.1f}% tier={}",
+            key, score.total_trades, score.win_rate * 100.0, score.tier);
+    }
+
+    /// Get the best available score: context-specific if sufficient data,
+    /// otherwise fall back to symbol-level aggregate.
+    [[nodiscard]] std::optional<SymbolScore> get_best_score(
+        const std::string& symbol,
+        const std::string& timeframe,
+        const std::string& direction) const
+    {
+        // Try context score first (require minimum 5 trades for context to be meaningful)
+        auto ctx = get_context_score(symbol, timeframe, direction);
+        if (ctx && ctx->total_trades >= 5) return ctx;
+        // Fall back to symbol-level
+        return get_score(symbol);
+    }
+
+    /// Thread-safe snapshot of all context scores
+    [[nodiscard]] std::unordered_map<std::string, SymbolScore> context_scores_snapshot() const {
+        std::lock_guard lock(m_mtx);
+        return m_context_scores;
+    }
+
+    /// Get all context scores as JSON for dashboard/API
+    [[nodiscard]] nlohmann::json get_all_context_scores_json() const {
+        std::lock_guard lock(m_mtx);
+        std::vector<std::pair<std::string, SymbolScore>> sorted(
+            m_context_scores.begin(), m_context_scores.end());
+        std::sort(sorted.begin(), sorted.end(),
+            [](auto& a, auto& b) { return a.second.composite_score > b.second.composite_score; });
+        auto arr = nlohmann::json::array();
+        for (auto& [_, s] : sorted) arr.push_back(s);
+        return arr;
+    }
 
     void rescore_all(const std::vector<TradeRecord>& trades) {
         if (!m_enabled) return;
@@ -533,6 +652,46 @@ private:
         }
     }
 
+    // ── Context Score Persistence ──
+
+    void save_context_scores_locked() {
+        try {
+            std::filesystem::create_directories(m_data_dir);
+            nlohmann::json data;
+            data["last_updated"] = current_iso_time();
+            data["total_contexts"] = m_context_scores.size();
+            auto& ctx_obj = data["context_scores"];
+            for (auto& [key, s] : m_context_scores) ctx_obj[key] = s;
+
+            auto path = m_data_dir + "/context_scores.json";
+            auto tmp  = path + ".tmp";
+            {
+                std::ofstream f(tmp);
+                f << data.dump(2);
+            }
+            std::filesystem::rename(tmp, path);
+        } catch (const std::exception& e) {
+            spdlog::error("[SCORER] Context scores save failed: {}", e.what());
+        }
+    }
+
+    void load_context_scores() {
+        auto path = m_data_dir + "/context_scores.json";
+        if (!std::filesystem::exists(path)) return;
+        try {
+            std::ifstream f(path);
+            auto data = nlohmann::json::parse(f);
+            std::lock_guard lock(m_mtx);
+            auto ctx_json = data.value("context_scores", nlohmann::json::object());
+            for (auto& [key, sd] : ctx_json.items()) {
+                m_context_scores[key] = sd.get<SymbolScore>();
+            }
+            spdlog::info("[SCORER] Loaded {} context scores", m_context_scores.size());
+        } catch (const std::exception& e) {
+            spdlog::error("[SCORER] Context scores load failed: {}", e.what());
+        }
+    }
+
     // ── Helpers ──
 
     static std::string current_iso_time() {
@@ -557,6 +716,8 @@ private:
     // ── State ──
     mutable std::mutex m_mtx;
     std::unordered_map<std::string, SymbolScore> m_scores;
+    // Context scores: keyed by "SYMBOL:TF:DIR" (e.g., "BTCUSDT:15:long")
+    std::unordered_map<std::string, SymbolScore> m_context_scores;
     std::chrono::system_clock::time_point m_last_rescore{};
     std::string m_data_dir;
 

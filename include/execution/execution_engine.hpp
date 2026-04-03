@@ -616,6 +616,10 @@ private:
                         double pnl = m_trade_rec.record_ws_close(result.pos, exit_price, upd.realized_pnl);
                         spdlog::info("[WS] Auto-removed {} {} PnL={:.4f}",
                             upd.symbol, upd.hold_side, pnl);
+                        // ★ Record context trade for per-context scoring
+                        m_scorer.record_context_trade(
+                            upd.symbol, result.pos.timeframe, upd.hold_side,
+                            pnl, pnl > 0);
                         m_trade_rec.alert_trade("info", "WS close " + upd.symbol +
                             " PnL=" + std::to_string(pnl).substr(0,8), upd.symbol);
                         m_pos_mgr.save_state(m_trades, m_orders_executed.load());
@@ -729,6 +733,16 @@ private:
 
                     std::unordered_set<std::string> new_eligible;
                     auto ps = m_readiness.refresh_eligible(futures_report, spot_report, new_eligible);
+
+                    // ★ Enrich with context-level eligible keys (symbol:tf:direction)
+                    try {
+                        auto futures_tf = m_shadow.get_symbol_tf_report();
+                        auto spot_tf = m_spot_shadow.get_symbol_tf_report();
+                        m_readiness.enrich_eligible_with_context(
+                            futures_tf, spot_tf, new_eligible);
+                    } catch (const std::exception& e) {
+                        spdlog::warn("[Periodic] Context eligible enrichment failed: {}", e.what());
+                    }
 
                     {
                         std::lock_guard elock(m_eligible_mtx);
@@ -924,11 +938,19 @@ private:
         // 1. 티어 체크 — Shadow vs Live 모드 분기
         //    ★ FIX: eligible은 "후보"일 뿐, 모든 안전 게이트를 통과해야 함
         //    eligible이어도 tier/grade/learner 체크를 bypass하지 않음
-        std::string tier = m_scorer.get_tier(sig.symbol);
+        // ★ Context-aware tier: try symbol:tf:direction first, fall back to symbol-level
+        std::string entry_dir_tier = sig.action == "buy" ? "long" : "short";
+        auto ctx_score_tier = m_scorer.get_context_score(sig.symbol, tf, entry_dir_tier);
+        std::string tier = (ctx_score_tier && ctx_score_tier->total_trades >= 5)
+            ? ctx_score_tier->tier
+            : m_scorer.get_tier(sig.symbol);
         bool is_eligible = false;
         if (m_auto_live_active.load()) {
             std::lock_guard elock(m_eligible_mtx);
-            is_eligible = m_eligible_keys.find(sig.symbol) != m_eligible_keys.end();
+            // Check both context key and symbol-level eligibility
+            std::string ctx_elig_key = SymbolScorer::compute_context_key(sig.symbol, tf, entry_dir_tier);
+            is_eligible = m_eligible_keys.find(ctx_elig_key) != m_eligible_keys.end()
+                       || m_eligible_keys.find(sig.symbol) != m_eligible_keys.end();
         }
 
         if (m_trading.shadow_mode) {
@@ -1070,12 +1092,21 @@ private:
             used_margin = m_pos_mgr.calc_used_margin(m_trading.default_leverage);
         }
 
-        auto score = m_scorer.get_score(sig.symbol);
+        // ★ Context-aware scoring: try symbol:tf:direction first, fall back to symbol-level
+        std::string entry_dir = sig.action == "buy" ? "long" : "short";
+        auto score = m_scorer.get_best_score(sig.symbol, tf, entry_dir);
         int leverage = m_trading.default_leverage;
         if (score) leverage = std::min(leverage, score->max_leverage);
 
         double sl_price = sig.has_sl() ? sig.sl : 0;
-        double conf_boost = m_readiness.get_confidence(sig.symbol).size_boost;
+        // ★ Context-aware confidence: try context key first, fall back to symbol
+        std::string ctx_key = SymbolScorer::compute_context_key(sig.symbol, tf, entry_dir);
+        auto conf_entry = m_readiness.get_confidence(ctx_key);
+        if (conf_entry.confidence == 0) {
+            // No context-level confidence, fall back to symbol-level
+            conf_entry = m_readiness.get_confidence(sig.symbol);
+        }
+        double conf_boost = conf_entry.size_boost;
         auto sz = m_sizer.calc_size(balance_now, sig.symbol, sig.price, sl_price, leverage, score, dd_pct, used_margin, conf_boost);
 
         if (sz.usdt_amount <= 0 || sz.qty <= 0) {
