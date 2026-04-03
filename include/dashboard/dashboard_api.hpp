@@ -62,6 +62,10 @@ struct DashboardCallbacks {
     std::function<nlohmann::json()> get_shadow_trades;
     std::function<nlohmann::json()> get_shadow_symbol_report;
 
+    // ── Shadow Live-Equivalent 콜백 (live 필터 통과 가상 추적) ──
+    std::function<nlohmann::json()> get_shadow_live_equiv_stats;
+    std::function<nlohmann::json()> get_shadow_live_equiv_trades;
+
     // ── Spot 전용 콜백 (선물과 완전 분리) ──
     std::function<nlohmann::json()> get_spot_stats;
     std::function<nlohmann::json()> get_spot_positions;
@@ -363,6 +367,21 @@ private:
                 if (m_cb.get_shadow_symbol_report) {
                     return make_response(http::status::ok,
                         m_cb.get_shadow_symbol_report().dump());
+                }
+                return make_response(http::status::ok, "[]");
+            }
+            // ── Shadow Live-Equivalent API (live 필터 통과 가상 추적) ──
+            if (target == "/api/shadow/live-equiv-stats") {
+                if (m_cb.get_shadow_live_equiv_stats) {
+                    return make_response(http::status::ok,
+                        m_cb.get_shadow_live_equiv_stats().dump());
+                }
+                return make_response(http::status::ok, "{}");
+            }
+            if (target == "/api/shadow/live-equiv-trades") {
+                if (m_cb.get_shadow_live_equiv_trades) {
+                    return make_response(http::status::ok,
+                        m_cb.get_shadow_live_equiv_trades().dump());
                 }
                 return make_response(http::status::ok, "[]");
             }

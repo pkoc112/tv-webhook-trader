@@ -388,6 +388,14 @@ public:
         return m_shadow.get_symbol_report();
     }
 
+    // ── Shadow Live-Equivalent 접근자 (live 필터 통과 가상 추적 데이터) ──
+    [[nodiscard]] nlohmann::json get_shadow_live_equiv_stats() const {
+        return m_shadow.get_live_equiv_stats_json();
+    }
+    [[nodiscard]] nlohmann::json get_shadow_live_equiv_trades() const {
+        return m_shadow.get_live_equiv_trades_json(200);
+    }
+
     // ── Strategy performance stats for identifying bad signals ──
     [[nodiscard]] nlohmann::json get_strategy_stats() const {
         return m_trade_rec.get_strategy_stats();
@@ -620,6 +628,20 @@ private:
                         m_scorer.record_context_trade(
                             upd.symbol, result.pos.timeframe, upd.hold_side,
                             pnl, pnl > 0);
+                        // ★ Record realized trade with fee/RR data
+                        {
+                            double fee = TradeRecorder::calc_fee(exit_price, result.pos.quantity);
+                            double gross = pnl + fee;
+                            double planned_risk = 0;
+                            if (result.pos.sl_price > 0 && result.pos.entry_price > 0) {
+                                planned_risk = std::abs(result.pos.entry_price - result.pos.sl_price) * result.pos.quantity;
+                            }
+                            double rr = (planned_risk > 0.0001) ? pnl / planned_risk
+                                : (result.pos.entry_price > 0 ? pnl / (result.pos.entry_price * result.pos.quantity) : 0);
+                            m_scorer.record_realized_trade(
+                                upd.symbol, result.pos.timeframe, upd.hold_side,
+                                gross, fee, rr);
+                        }
                         m_trade_rec.alert_trade("info", "WS close " + upd.symbol +
                             " PnL=" + std::to_string(pnl).substr(0,8), upd.symbol);
                         m_pos_mgr.save_state(m_trades, m_orders_executed.load());
@@ -1189,6 +1211,13 @@ private:
 
         std::string side_str = sig.action == "buy" ? "long" : "short";
 
+        // ★ Live-equivalent marking: this trade passed ALL pipeline stages
+        // Mark it in shadow tracker so we can separately track "would-have-been-live" performance
+        {
+            std::string le_key = sig.symbol + ":" + tf + ":" + side_str;
+            m_shadow.mark_live_equivalent(le_key);
+        }
+
         // ★ Shadow/Live 분기: 자동 전환 모드에서는 심볼 단위로 판단
         //    is_eligible은 위 tier 체크 단계에서 이미 계산됨
         bool force_shadow = m_trading.shadow_mode;
@@ -1374,6 +1403,16 @@ private:
                 if (sig.tp_level == "TP3" || close_ratio >= 0.99) {
                     // 전체 청산 → 거래 기록 + 포지션 제거
                     double pnl = m_trade_rec.record_close(*pos, exit_price, sig.tp_level, close_qty);
+                    // Record realized trade for scoring
+                    {
+                        double fee = TradeRecorder::calc_fee(exit_price, close_qty);
+                        double gross = pnl + fee;
+                        double planned_risk = (pos->sl_price > 0 && pos->entry_price > 0)
+                            ? std::abs(pos->entry_price - pos->sl_price) * close_qty : 0;
+                        double rr = (planned_risk > 0.0001) ? pnl / planned_risk
+                            : (pos->entry_price > 0 ? pnl / (pos->entry_price * close_qty) : 0);
+                        m_scorer.record_realized_trade(sig.symbol, pos->timeframe, hold_side, gross, fee, rr);
+                    }
                     m_pos_mgr.remove(match.key);
                     spdlog::info("[TRADE] {} {} {:.4f} @ {:.4f} (100%)",
                         sig.tp_level, sig.symbol, pnl, exit_price);
@@ -1383,6 +1422,16 @@ private:
                     // 부분 청산 → 수량 차감 + PnL 기록
                     double pnl = m_trade_rec.record_close(*pos, exit_price,
                         sig.tp_level + "_PARTIAL", close_qty);
+                    // Record realized trade for partial close
+                    {
+                        double fee = TradeRecorder::calc_fee(exit_price, close_qty);
+                        double gross = pnl + fee;
+                        double planned_risk = (pos->sl_price > 0 && pos->entry_price > 0)
+                            ? std::abs(pos->entry_price - pos->sl_price) * close_qty : 0;
+                        double rr = (planned_risk > 0.0001) ? pnl / planned_risk
+                            : (pos->entry_price > 0 ? pnl / (pos->entry_price * close_qty) : 0);
+                        m_scorer.record_realized_trade(sig.symbol, pos->timeframe, hold_side, gross, fee, rr);
+                    }
                     m_pos_mgr.reduce_quantity(match.key, close_qty);
                     spdlog::info("[TRADE] {} {} {:.4f} @ {:.4f} ({:.0f}%)",
                         sig.tp_level, sig.symbol, pnl, exit_price, close_ratio * 100);
@@ -1472,6 +1521,16 @@ private:
             if (pos) {
                 double exit_price = sig.price > 0 ? sig.price : pos->sl_price;
                 double pnl = m_trade_rec.record_close(*pos, exit_price, "SL");
+                // Record realized trade for SL close
+                {
+                    double fee = TradeRecorder::calc_fee(exit_price, pos->quantity);
+                    double gross = pnl + fee;
+                    double planned_risk = (pos->sl_price > 0 && pos->entry_price > 0)
+                        ? std::abs(pos->entry_price - pos->sl_price) * pos->quantity : 0;
+                    double rr = (planned_risk > 0.0001) ? pnl / planned_risk
+                        : (pos->entry_price > 0 ? pnl / (pos->entry_price * pos->quantity) : 0);
+                    m_scorer.record_realized_trade(sig.symbol, pos->timeframe, hold_side, gross, fee, rr);
+                }
                 m_pos_mgr.remove(match.key);
                 m_pos_mgr.save_state(m_trades, m_orders_executed.load());
                 spdlog::info("[TRADE] SL {} {:.4f} @ {:.4f}",

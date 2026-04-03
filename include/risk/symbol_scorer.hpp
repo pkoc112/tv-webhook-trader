@@ -39,6 +39,12 @@ struct TradeRecord {
     std::string strategy{"unknown"};
     std::string exchange{"bitget"};     // "bitget" / "upbit"
     std::string market_type{"futures"}; // "futures" / "spot"
+
+    // ── Realized RR fields (Feature: Realized RR Scoring) ──
+    double gross_pnl{0.0};       // PnL before fees
+    double net_pnl{0.0};         // PnL after fees (= gross_pnl - fee_cost)
+    double fee_cost{0.0};        // entry fee + exit fee
+    double realized_rr{0.0};     // actual_pnl_net / planned_risk
 };
 
 inline void from_json(const nlohmann::json& j, TradeRecord& t) {
@@ -54,6 +60,11 @@ inline void from_json(const nlohmann::json& j, TradeRecord& t) {
         t.strategy    = j.value("strategy", std::string("unknown"));
         t.exchange    = j.value("exchange", std::string("bitget"));
         t.market_type = j.value("market_type", std::string("futures"));
+        // Realized RR fields (backward-compatible: default 0)
+        t.gross_pnl    = j.value("gross_pnl", 0.0);
+        t.net_pnl      = j.value("net_pnl", 0.0);
+        t.fee_cost     = j.value("fee_cost", 0.0);
+        t.realized_rr  = j.value("realized_rr", 0.0);
     } catch (...) {}
 }
 
@@ -106,6 +117,13 @@ struct SymbolScore {
     std::string last_updated;
     std::unordered_map<std::string, TfSubScore> tf_scores;
 
+    // ── Realized RR metrics (Feature: Realized RR Scoring) ──
+    double avg_realized_rr{0.0};           // average realized risk-reward ratio
+    double net_expectancy_per_trade{0.0};  // average net_pnl per trade
+    double total_fees{0.0};                // total fee cost across all trades
+    double realized_rr_consistency{0.0};   // closeness of planned vs realized RR (0-1)
+    int    realized_trade_count{0};        // trades with valid realized_rr data
+
     // REVERSE 성적
     int    rev_trades{0};
     int    rev_wins{0};
@@ -129,6 +147,11 @@ inline void to_json(nlohmann::json& j, const SymbolScore& s) {
         {"size_multiplier", s.size_multiplier}, {"max_leverage", s.max_leverage},
         {"last_updated", s.last_updated},
         {"tf_scores", s.tf_scores},
+        {"avg_realized_rr", s.avg_realized_rr},
+        {"net_expectancy_per_trade", s.net_expectancy_per_trade},
+        {"total_fees", s.total_fees},
+        {"realized_rr_consistency", s.realized_rr_consistency},
+        {"realized_trade_count", s.realized_trade_count},
         {"rev_trades", s.rev_trades}, {"rev_wins", s.rev_wins},
         {"rev_pnl", s.rev_pnl}, {"rev_win_rate", s.rev_win_rate},
         {"rev_allowed", s.rev_allowed}, {"rev_score_adj", s.rev_score_adj}
@@ -160,6 +183,11 @@ inline void from_json(const nlohmann::json& j, SymbolScore& s) {
         if (j.contains("tf_scores") && j["tf_scores"].is_object()) {
             s.tf_scores = j["tf_scores"].get<std::unordered_map<std::string, TfSubScore>>();
         }
+        s.avg_realized_rr          = j.value("avg_realized_rr", 0.0);
+        s.net_expectancy_per_trade = j.value("net_expectancy_per_trade", 0.0);
+        s.total_fees               = j.value("total_fees", 0.0);
+        s.realized_rr_consistency  = j.value("realized_rr_consistency", 0.0);
+        s.realized_trade_count     = j.value("realized_trade_count", 0);
         s.rev_trades    = j.value("rev_trades", 0);
         s.rev_wins      = j.value("rev_wins", 0);
         s.rev_pnl       = j.value("rev_pnl", 0.0);
@@ -308,6 +336,66 @@ public:
 
         spdlog::debug("[SCORER] Context trade recorded: {} trades={} wr={:.1f}% tier={}",
             key, score.total_trades, score.win_rate * 100.0, score.tier);
+    }
+
+    /// Record a realized trade with fee/RR data into context scoring.
+    /// Called when a shadow or live trade closes with realized RR info.
+    void record_realized_trade(const std::string& symbol,
+                               const std::string& timeframe,
+                               const std::string& direction,
+                               double gross_pnl, double fee_cost,
+                               double realized_rr)
+    {
+        std::string key = compute_context_key(symbol, timeframe, direction);
+        std::lock_guard lock(m_mtx);
+
+        auto& acc = m_realized_accumulators[key];
+        acc.total_gross_pnl += gross_pnl;
+        acc.total_fee_cost += fee_cost;
+        acc.total_net_pnl += (gross_pnl - fee_cost);
+        acc.sum_realized_rr += realized_rr;
+        acc.count++;
+
+        // Update the context score with realized metrics
+        auto ctx_it = m_context_scores.find(key);
+        if (ctx_it != m_context_scores.end()) {
+            auto& score = ctx_it->second;
+            score.avg_realized_rr = acc.count > 0
+                ? acc.sum_realized_rr / acc.count : 0.0;
+            score.net_expectancy_per_trade = acc.count > 0
+                ? acc.total_net_pnl / acc.count : 0.0;
+            score.total_fees = acc.total_fee_cost;
+            score.realized_trade_count = acc.count;
+
+            // Realized RR consistency: compare planned expectancy vs net expectancy
+            // 1.0 = perfectly consistent, 0.0 = very different
+            if (acc.count >= 10 && std::abs(score.expectancy) > 0.0001) {
+                double ratio = score.net_expectancy_per_trade / score.expectancy;
+                score.realized_rr_consistency = std::clamp(
+                    1.0 - std::abs(1.0 - ratio), 0.0, 1.0);
+            }
+
+            // If 10+ realized trades, adjust composite score to weight realized data
+            if (acc.count >= 10) {
+                // Blend: 60% original composite + 25% net_expectancy + 15% realized_rr_avg
+                double net_exp_score = normalize(score.net_expectancy_per_trade, -0.05, 0.15) * 100.0;
+                double rr_score = normalize(score.avg_realized_rr, 0.0, 3.0) * 100.0;
+                double blended = score.composite_score * 0.60
+                               + net_exp_score * 0.25
+                               + rr_score * 0.15;
+                score.composite_score = round1(std::clamp(blended, 0.0, 100.0));
+                score.tier = assign_tier(score.composite_score);
+                score.size_multiplier = size_mult_for(score.tier);
+                score.max_leverage = max_lev_for(score.tier);
+            }
+
+            save_context_scores_locked();
+        }
+
+        spdlog::debug("[SCORER] Realized trade recorded: {} count={} avg_rr={:.3f} net_exp={:.4f}",
+            key, acc.count,
+            acc.count > 0 ? acc.sum_realized_rr / acc.count : 0.0,
+            acc.count > 0 ? acc.total_net_pnl / acc.count : 0.0);
     }
 
     /// Get the best available score: context-specific if sufficient data,
@@ -713,11 +801,22 @@ private:
     static double round4(double v) { return std::round(v * 10000.0) / 10000.0; }
     static double round6(double v) { return std::round(v * 1000000.0) / 1000000.0; }
 
+    // ── Realized RR accumulator (per context key) ──
+    struct RealizedAccumulator {
+        double total_gross_pnl{0.0};
+        double total_fee_cost{0.0};
+        double total_net_pnl{0.0};
+        double sum_realized_rr{0.0};
+        int count{0};
+    };
+
     // ── State ──
     mutable std::mutex m_mtx;
     std::unordered_map<std::string, SymbolScore> m_scores;
     // Context scores: keyed by "SYMBOL:TF:DIR" (e.g., "BTCUSDT:15:long")
     std::unordered_map<std::string, SymbolScore> m_context_scores;
+    // Realized RR accumulators: keyed by same context key
+    std::unordered_map<std::string, RealizedAccumulator> m_realized_accumulators;
     std::chrono::system_clock::time_point m_last_rescore{};
     std::string m_data_dir;
 

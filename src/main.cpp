@@ -355,6 +355,9 @@ int main(int argc, char* argv[]) {
             .get_shadow_positions = [&exec_engine]() { return exec_engine.get_shadow_positions(); },
             .get_shadow_trades = [&exec_engine]() { return exec_engine.get_shadow_trades(); },
             .get_shadow_symbol_report = [&exec_engine]() { return exec_engine.get_shadow_symbol_report(); },
+            // ── Shadow Live-Equivalent 콜백 (live 필터 통과 가상 추적) ──
+            .get_shadow_live_equiv_stats = [&exec_engine]() { return exec_engine.get_shadow_live_equiv_stats(); },
+            .get_shadow_live_equiv_trades = [&exec_engine]() { return exec_engine.get_shadow_live_equiv_trades(); },
             // ── Spot 전용 콜백 (선물과 완전 분리) ──
             .get_spot_stats = [&exec_engine]() { return exec_engine.get_spot_stats(); },
             .get_spot_positions = [&exec_engine]() {

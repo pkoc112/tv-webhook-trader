@@ -20,7 +20,9 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <cmath>
 #include <unordered_map>
+#include <unordered_set>
 #include <chrono>
 #include <fstream>
 #include <spdlog/spdlog.h>
@@ -112,6 +114,71 @@ public:
         };
     }
 
+    // ================================================================
+    // Live-Equivalent Shadow Tracking (Feature 2)
+    // Tracks shadow trades that WOULD HAVE passed all live filters
+    // ================================================================
+
+    /// Mark a shadow trade key as "would have been live"
+    /// Called from ExecutionEngine after all 12 pipeline stages pass
+    /// trade_key format: "SYMBOL:TF:SIDE" (same as position key)
+    void mark_live_equivalent(const std::string& trade_key) {
+        std::lock_guard lock(m_mtx);
+        m_live_equiv_keys.insert(trade_key);
+        m_live_equiv_stats.total_entries++;
+        spdlog::info("[SHADOW] Marked live-equivalent: {} (le_entries: {})",
+            trade_key, m_live_equiv_stats.total_entries);
+    }
+
+    /// Get live-equivalent stats (only trades that would have been live)
+    [[nodiscard]] ShadowStats get_live_equiv_stats() const {
+        std::lock_guard lock(m_mtx);
+        return m_live_equiv_stats;
+    }
+
+    [[nodiscard]] nlohmann::json get_live_equiv_stats_json() const {
+        std::lock_guard lock(m_mtx);
+        // Count live-equiv open positions
+        uint64_t le_open = 0;
+        for (auto& k : m_live_equiv_keys) {
+            if (m_positions.count(k)) le_open++;
+        }
+        return nlohmann::json{
+            {"total_entries", m_live_equiv_stats.total_entries},
+            {"total_closes", m_live_equiv_stats.total_closes},
+            {"open_positions", le_open},
+            {"wins", m_live_equiv_stats.wins},
+            {"losses", m_live_equiv_stats.losses},
+            {"total_pnl", std::round(m_live_equiv_stats.total_pnl * 10000.0) / 10000.0},
+            {"win_rate", m_live_equiv_stats.win_rate},
+            {"pending_keys", m_live_equiv_keys.size()}
+        };
+    }
+
+    [[nodiscard]] nlohmann::json get_live_equiv_trades_json(size_t limit = 100) const {
+        std::lock_guard lock(m_mtx);
+        auto arr = nlohmann::json::array();
+        size_t start = m_live_equiv_trades.size() > limit ? m_live_equiv_trades.size() - limit : 0;
+        for (size_t i = start; i < m_live_equiv_trades.size(); i++) {
+            auto& t = m_live_equiv_trades[i];
+            arr.push_back(nlohmann::json{
+                {"symbol", t.symbol},
+                {"timeframe", t.timeframe},
+                {"side", t.market_type},
+                {"entry_price", t.entry_price},
+                {"exit_price", t.exit_price},
+                {"pnl", std::round(t.pnl * 10000.0) / 10000.0},
+                {"fee", std::round(t.fee * 10000.0) / 10000.0},
+                {"gross_pnl", std::round(t.gross_pnl * 10000.0) / 10000.0},
+                {"net_pnl", std::round(t.net_pnl * 10000.0) / 10000.0},
+                {"realized_rr", std::round(t.realized_rr * 100.0) / 100.0},
+                {"exit_reason", t.exit_reason},
+                {"strategy", t.strategy}
+            });
+        }
+        return arr;
+    }
+
     [[nodiscard]] nlohmann::json get_positions_json() const {
         std::lock_guard lock(m_mtx);
         auto arr = nlohmann::json::array();
@@ -147,7 +214,11 @@ public:
                 {"pnl", std::round(t.pnl * 10000.0) / 10000.0},
                 {"fee", std::round(t.fee * 10000.0) / 10000.0},
                 {"exit_reason", t.exit_reason},
-                {"strategy", t.strategy}
+                {"strategy", t.strategy},
+                {"gross_pnl", std::round(t.gross_pnl * 10000.0) / 10000.0},
+                {"net_pnl", std::round(t.net_pnl * 10000.0) / 10000.0},
+                {"fee_cost", std::round(t.fee_cost * 10000.0) / 10000.0},
+                {"realized_rr", std::round(t.realized_rr * 100.0) / 100.0}
             });
         }
         return arr;
@@ -399,14 +470,32 @@ private:
         double qty = (vp.entry_price > 0) ? VIRTUAL_NOTIONAL / vp.entry_price : 0;
 
         double direction = (vp.side == "long") ? 1.0 : -1.0;
-        double pnl_raw = direction * (exit_price - vp.entry_price) * qty;
+        double gross_pnl = direction * (exit_price - vp.entry_price) * qty;
 
         // 수수료: 0.06% taker × 2 (round-trip)
         constexpr double TAKER_FEE = 0.0006;
-        double fee = (vp.entry_price * qty + exit_price * qty) * TAKER_FEE;
-        double pnl = pnl_raw - fee;
+        double entry_fee = vp.entry_price * qty * TAKER_FEE;
+        double exit_fee  = exit_price * qty * TAKER_FEE;
+        double fee_cost  = entry_fee + exit_fee;
+        double net_pnl   = gross_pnl - fee_cost;
 
-        // TradeRecord 생성
+        // ── Realized RR calculation ──
+        // planned_risk = |entry - sl| * qty; if no SL, use pnl / entry_notional
+        double realized_rr = 0.0;
+        if (vp.sl_price > 0 && vp.entry_price > 0) {
+            double planned_risk = std::abs(vp.entry_price - vp.sl_price) * qty;
+            if (planned_risk > 0.0001) {
+                realized_rr = net_pnl / planned_risk;
+            }
+        } else if (vp.entry_price > 0) {
+            // No SL set: fallback to pnl / entry_notional
+            double entry_notional = vp.entry_price * qty;
+            if (entry_notional > 0.0001) {
+                realized_rr = net_pnl / entry_notional;
+            }
+        }
+
+        // TradeRecord 생성 (with realized RR fields)
         TradeRecord tr;
         tr.symbol      = vp.symbol;
         tr.timeframe   = vp.timeframe;
@@ -414,15 +503,20 @@ private:
         tr.entry_price = vp.entry_price;
         tr.exit_price  = exit_price;
         tr.quantity     = qty;
-        tr.pnl         = pnl;
-        tr.fee         = fee;
+        tr.pnl         = net_pnl;         // backward compat: pnl = net
+        tr.fee         = fee_cost;         // backward compat: fee = total fee_cost
         tr.strategy    = vp.strategy;
-        tr.market_type = vp.side;  // shadow trades: side 정보를 market_type에 저장
+        tr.market_type = vp.side;          // shadow trades: side 정보를 market_type에 저장
+        // Realized RR fields
+        tr.gross_pnl    = gross_pnl;
+        tr.net_pnl      = net_pnl;
+        tr.fee_cost     = fee_cost;
+        tr.realized_rr  = realized_rr;
 
         // 통계 업데이트
-        if (pnl > 0) m_wins++;
+        if (net_pnl > 0) m_wins++;
         else m_losses++;
-        m_total_pnl += pnl;
+        m_total_pnl += net_pnl;
         m_total_closes++;
 
         // 거래 기록 저장
@@ -432,9 +526,32 @@ private:
         // SymbolLearner에 전달 → 스코어링
         m_learner.record_trade(tr);
 
-        spdlog::info("[SHADOW] CLOSE {} {} {} entry={:.6f} exit={:.6f} pnl={:.4f} reason={} (total: {}/{})",
+        // ── Live-equivalent tracking: if this position was marked, record it ──
+        std::string pos_key = make_key(vp.symbol, vp.timeframe, vp.side);
+        if (m_live_equiv_keys.count(pos_key)) {
+            if (net_pnl > 0) m_live_equiv_stats.wins++;
+            else m_live_equiv_stats.losses++;
+            m_live_equiv_stats.total_pnl += net_pnl;
+            m_live_equiv_stats.total_closes++;
+            m_live_equiv_stats.win_rate = m_live_equiv_stats.total_closes > 0
+                ? std::round(static_cast<double>(m_live_equiv_stats.wins)
+                    / m_live_equiv_stats.total_closes * 10000.0) / 100.0
+                : 0.0;
+            m_live_equiv_trades.push_back(tr);
+            // Cap live-equiv trades
+            if (m_live_equiv_trades.size() > 2000) {
+                m_live_equiv_trades.erase(m_live_equiv_trades.begin(),
+                    m_live_equiv_trades.begin() + static_cast<ptrdiff_t>(
+                        m_live_equiv_trades.size() - 2000));
+            }
+            m_live_equiv_keys.erase(pos_key);
+            spdlog::info("[SHADOW] Live-equiv CLOSE {} pnl={:.4f} (le_total: {}/{})",
+                pos_key, net_pnl, m_live_equiv_stats.wins, m_live_equiv_stats.total_closes);
+        }
+
+        spdlog::info("[SHADOW] CLOSE {} {} {} entry={:.6f} exit={:.6f} gross={:.4f} fee={:.4f} net={:.4f} rr={:.2f} reason={} (total: {}/{})",
             vp.symbol, vp.timeframe, vp.side,
-            vp.entry_price, exit_price, pnl, reason,
+            vp.entry_price, exit_price, gross_pnl, fee_cost, net_pnl, realized_rr, reason,
             m_wins, m_total_closes);
 
         m_positions.erase(it);
@@ -491,7 +608,9 @@ private:
                     {"side", t.market_type},  // shadow: side info
                     {"entry_price", t.entry_price}, {"exit_price", t.exit_price},
                     {"quantity", t.quantity}, {"pnl", t.pnl}, {"fee", t.fee},
-                    {"exit_reason", t.exit_reason}, {"strategy", t.strategy}
+                    {"exit_reason", t.exit_reason}, {"strategy", t.strategy},
+                    {"gross_pnl", t.gross_pnl}, {"net_pnl", t.net_pnl},
+                    {"fee_cost", t.fee_cost}, {"realized_rr", t.realized_rr}
                 });
             }
             j["trades"] = tr_arr;
@@ -504,6 +623,38 @@ private:
                 {"losses", m_losses},
                 {"total_pnl", m_total_pnl}
             };
+
+            // Live-equivalent stats
+            j["live_equiv_stats"] = nlohmann::json{
+                {"total_entries", m_live_equiv_stats.total_entries},
+                {"total_closes", m_live_equiv_stats.total_closes},
+                {"wins", m_live_equiv_stats.wins},
+                {"losses", m_live_equiv_stats.losses},
+                {"total_pnl", m_live_equiv_stats.total_pnl},
+                {"win_rate", m_live_equiv_stats.win_rate}
+            };
+
+            // Live-equivalent pending keys
+            auto le_keys_arr = nlohmann::json::array();
+            for (auto& k : m_live_equiv_keys) le_keys_arr.push_back(k);
+            j["live_equiv_keys"] = le_keys_arr;
+
+            // Live-equivalent trades (recent 500)
+            auto le_tr_arr = nlohmann::json::array();
+            size_t le_start = m_live_equiv_trades.size() > 500 ? m_live_equiv_trades.size() - 500 : 0;
+            for (size_t i = le_start; i < m_live_equiv_trades.size(); i++) {
+                auto& t = m_live_equiv_trades[i];
+                le_tr_arr.push_back(nlohmann::json{
+                    {"symbol", t.symbol}, {"timeframe", t.timeframe},
+                    {"side", t.market_type},
+                    {"entry_price", t.entry_price}, {"exit_price", t.exit_price},
+                    {"quantity", t.quantity}, {"pnl", t.pnl}, {"fee", t.fee},
+                    {"exit_reason", t.exit_reason}, {"strategy", t.strategy},
+                    {"gross_pnl", t.gross_pnl}, {"net_pnl", t.net_pnl},
+                    {"fee_cost", t.fee_cost}, {"realized_rr", t.realized_rr}
+                });
+            }
+            j["live_equiv_trades"] = le_tr_arr;
 
             // Atomic write
             std::string path = m_data_dir + "/shadow_state.json";
@@ -562,6 +713,11 @@ private:
                     tr.exit_reason = t.value("exit_reason", "");
                     tr.strategy    = t.value("strategy", "unknown");
                     tr.market_type = t.value("side", "");  // shadow: side info
+                    // Realized RR fields (backward-compatible)
+                    tr.gross_pnl   = t.value("gross_pnl", 0.0);
+                    tr.net_pnl     = t.value("net_pnl", 0.0);
+                    tr.fee_cost    = t.value("fee_cost", 0.0);
+                    tr.realized_rr = t.value("realized_rr", 0.0);
                     m_trades.push_back(tr);
                 }
             }
@@ -576,8 +732,49 @@ private:
                 m_total_pnl     = s.value("total_pnl", 0.0);
             }
 
-            spdlog::info("[SHADOW] Loaded: {} positions, {} trades, {}/{} W/L, pnl={:.2f}",
-                m_positions.size(), m_trades.size(), m_wins, m_losses, m_total_pnl);
+            // Live-equivalent stats restore
+            if (j.contains("live_equiv_stats")) {
+                auto& les = j["live_equiv_stats"];
+                m_live_equiv_stats.total_entries = les.value("total_entries", uint64_t{0});
+                m_live_equiv_stats.total_closes  = les.value("total_closes", uint64_t{0});
+                m_live_equiv_stats.wins          = les.value("wins", 0);
+                m_live_equiv_stats.losses        = les.value("losses", 0);
+                m_live_equiv_stats.total_pnl     = les.value("total_pnl", 0.0);
+                m_live_equiv_stats.win_rate      = les.value("win_rate", 0.0);
+            }
+
+            // Live-equivalent pending keys restore
+            if (j.contains("live_equiv_keys") && j["live_equiv_keys"].is_array()) {
+                for (auto& k : j["live_equiv_keys"]) {
+                    if (k.is_string()) m_live_equiv_keys.insert(k.get<std::string>());
+                }
+            }
+
+            // Live-equivalent trades restore
+            if (j.contains("live_equiv_trades") && j["live_equiv_trades"].is_array()) {
+                for (auto& t : j["live_equiv_trades"]) {
+                    TradeRecord tr;
+                    tr.symbol      = t.value("symbol", "");
+                    tr.timeframe   = t.value("timeframe", "");
+                    tr.entry_price = t.value("entry_price", 0.0);
+                    tr.exit_price  = t.value("exit_price", 0.0);
+                    tr.quantity    = t.value("quantity", 0.0);
+                    tr.pnl         = t.value("pnl", 0.0);
+                    tr.fee         = t.value("fee", 0.0);
+                    tr.exit_reason = t.value("exit_reason", "");
+                    tr.strategy    = t.value("strategy", "unknown");
+                    tr.market_type = t.value("side", "");
+                    tr.gross_pnl   = t.value("gross_pnl", 0.0);
+                    tr.net_pnl     = t.value("net_pnl", 0.0);
+                    tr.fee_cost    = t.value("fee_cost", 0.0);
+                    tr.realized_rr = t.value("realized_rr", 0.0);
+                    m_live_equiv_trades.push_back(tr);
+                }
+            }
+
+            spdlog::info("[SHADOW] Loaded: {} positions, {} trades, {}/{} W/L, pnl={:.2f}, live_equiv={}/{}",
+                m_positions.size(), m_trades.size(), m_wins, m_losses, m_total_pnl,
+                m_live_equiv_stats.wins, m_live_equiv_stats.total_closes);
 
         } catch (const std::exception& e) {
             spdlog::warn("[SHADOW] Load error (starting fresh): {}", e.what());
@@ -598,6 +795,11 @@ private:
     int m_losses{0};
     double m_total_pnl{0.0};
     int m_ops_since_save{0};
+
+    // ── Live-equivalent shadow tracking (Feature 2) ──
+    std::unordered_set<std::string> m_live_equiv_keys;  // position keys marked as live-equiv
+    ShadowStats m_live_equiv_stats;                     // stats for live-equiv trades only
+    std::vector<TradeRecord> m_live_equiv_trades;       // trade records for live-equiv only
 };
 
 } // namespace hft
