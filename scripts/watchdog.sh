@@ -155,18 +155,28 @@ daily_report() {
     fi
 }
 
-# ── 4. 100건 자동 판정 + auto-live 전환 ──
+# ── 4. 100건 자동 판정 + 수동 승인 대기 ──
 MILESTONE_FLAG="/tmp/watchdog_100_milestone"
 LIVE_TRANSITION_FLAG="/home/ubuntu/tv-webhook-trader/data/auto_live_approved"
 check_milestone() {
+    set +e  # 이 함수 안에서는 에러 발생해도 계속 진행
+
     # 이미 판정 완료했으면 스킵
     if [ -f "$MILESTONE_FLAG" ]; then
+        set -e
         return
     fi
 
     local le
     le=$(curl -s --max-time 10 -H "$AUTH_HEADER" "$API_URL/shadow/live-equiv-stats" 2>/dev/null || echo "{}")
     local closes=$(echo "$le" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('total_closes',0))" 2>/dev/null || echo "0")
+
+    # closes가 숫자가 아니면 스킵
+    if ! [[ "$closes" =~ ^[0-9]+$ ]]; then
+        log "WARN: check_milestone: closes='$closes' is not a number"
+        set -e
+        return
+    fi
 
     if [ "$closes" -lt 100 ]; then
         # 25건, 50건, 75건 마일스톤 알림
@@ -341,6 +351,7 @@ Gate 1~4 체크 후 승인하세요." || echo "⏸ <b>추가 검토 필요</b>
     log "100-TRADE JUDGMENT: verdict=${verdict} all_pass=${all_pass} gross=${gross} est_net=${est_net} payoff=${payoff} consistency=${consistency} conc=${top_sym} cost_drag=${cost_drag}"
 
     touch "$MILESTONE_FLAG"
+    set -e
 }
 
 # ── 5. 킬 스위치 (긴급 거래 중단) ──
