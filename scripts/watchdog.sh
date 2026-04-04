@@ -225,40 +225,61 @@ auto_live = False
 
 if gross_sum > 0 and est_actual_net > 0:
     verdict = 'PASS'
-    detail = 'gross>0 AND estimated_net>0 → 자본 확대 검토'
-    auto_live = True
+    detail = 'gross>0 AND estimated_net>0'
 elif gross_sum > 0 and est_actual_net <= 0:
     verdict = 'REVIEW'
-    detail = 'gross>0 BUT net<0 → 실행/비용 구조 개선 필요'
+    detail = 'gross>0 BUT net<0 -> execution/cost fix needed'
 elif gross_sum <= 0:
     verdict = 'FAIL'
-    detail = 'gross<=0 → 시그널 계열 재검토 필요'
+    detail = 'gross<=0 -> signal family review needed'
 
-# 50-trade block 일관성
+# Payoff ratio (GPT Gate 1)
+wins_list = [t.get('net_pnl', 0) for t in trades if t.get('net_pnl', 0) > 0]
+losses_list = [t.get('net_pnl', 0) for t in trades if t.get('net_pnl', 0) <= 0]
+avg_win = sum(wins_list) / len(wins_list) if wins_list else 0
+avg_loss = sum(losses_list) / len(losses_list) if losses_list else 0
+payoff = abs(avg_win / avg_loss) if avg_loss != 0 else 0
+payoff_check = 'PASS' if payoff >= 1.0 else 'FAIL'
+
+# 50-trade block consistency
 block1_pnl = sum(t.get('net_pnl', 0) for t in trades[:50])
 block2_pnl = sum(t.get('net_pnl', 0) for t in trades[50:100])
 consistency = 'PASS' if block1_pnl > 0 and block2_pnl > 0 else 'FAIL'
 
-# 심볼 집중도
+# Symbol concentration (GPT: 25% threshold)
 from collections import Counter
 symbols = Counter(t.get('symbol', '?') for t in trades)
 top_symbol, top_count = symbols.most_common(1)[0] if symbols else ('?', 0)
 concentration = top_count / closes * 100 if closes > 0 else 0
-conc_check = 'PASS' if concentration < 30 else 'WARN'
+conc_check = 'PASS' if concentration < 25 else 'WARN'
+
+# Cost drag ratio (GPT: <35%)
+cost_drag = est_total_fee / gross_sum * 100 if gross_sum > 0 else 100
+cost_check = 'PASS' if cost_drag < 35 else 'WARN'
+
+# Final verdict with all gates
+all_pass = (verdict == 'PASS' and consistency == 'PASS'
+            and payoff_check == 'PASS' and conc_check == 'PASS')
 
 print(f'verdict={verdict}')
-print(f'auto_live={auto_live}')
+print(f'all_pass={all_pass}')
 print(f'closes={closes}')
 print(f'wr={wr}')
 print(f'gross={gross_sum:+.4f}')
 print(f'est_fee={est_total_fee:.4f}')
 print(f'est_net={est_actual_net:+.4f}')
 print(f'avg_gross={avg_gross:+.4f}')
+print(f'avg_win={avg_win:+.4f}')
+print(f'avg_loss={avg_loss:+.4f}')
+print(f'payoff={payoff:.2f}')
+print(f'payoff_check={payoff_check}')
 print(f'block1={block1_pnl:+.4f}')
 print(f'block2={block2_pnl:+.4f}')
 print(f'consistency={consistency}')
 print(f'top_symbol={top_symbol}({concentration:.0f}%)')
 print(f'conc_check={conc_check}')
+print(f'cost_drag={cost_drag:.1f}%')
+print(f'cost_check={cost_check}')
 print(f'detail={detail}')
 " <<< "$le_trades" 2>/dev/null || echo "verdict=ERROR")
 
@@ -276,70 +297,48 @@ print(f'detail={detail}')
     local conc_check=$(echo "$judgment" | grep "^conc_check=" | cut -d= -f2)
     local detail=$(echo "$judgment" | grep "^detail=" | cut -d= -f2-)
 
+    # 추가 판정 값 파싱
+    local all_pass=$(echo "$judgment" | grep "^all_pass=" | cut -d= -f2)
+    local payoff=$(echo "$judgment" | grep "^payoff=" | cut -d= -f2)
+    local payoff_check=$(echo "$judgment" | grep "^payoff_check=" | cut -d= -f2)
+    local avg_win=$(echo "$judgment" | grep "^avg_win=" | cut -d= -f2)
+    local avg_loss=$(echo "$judgment" | grep "^avg_loss=" | cut -d= -f2)
+    local cost_drag=$(echo "$judgment" | grep "^cost_drag=" | cut -d= -f2)
+    local cost_check=$(echo "$judgment" | grep "^cost_check=" | cut -d= -f2)
+
     local emoji="❓"
-    if [ "$verdict" = "PASS" ]; then emoji="🟢"; fi
+    if [ "$all_pass" = "True" ]; then emoji="🟢"; fi
     if [ "$verdict" = "REVIEW" ]; then emoji="🟡"; fi
     if [ "$verdict" = "FAIL" ]; then emoji="🔴"; fi
+    if [ "$all_pass" = "False" ] && [ "$verdict" = "PASS" ]; then emoji="🟡"; fi
 
     send_telegram "${emoji} <b>100건 판정 완료!</b>
 
-<b>결과: ${verdict}</b>
+<b>최종: $([ "$all_pass" = "True" ] && echo "ALL PASS" || echo "REVIEW NEEDED")</b>
 ${detail}
 
 📊 <b>성과</b>
 승률: ${wr}%
-Gross PnL: ${gross}
-예상 수수료: -${est_fee}
-예상 Net: ${est_net}
+Gross: ${gross} | Net: ${est_net}
+수수료: -${est_fee}
+Avg Win: ${avg_win} | Avg Loss: ${avg_loss}
+Payoff: ${payoff} (${payoff_check})
 
-📈 <b>일관성</b>
+📈 <b>검증</b>
 Block 1 (1-50): ${block1}
 Block 2 (51-100): ${block2}
 일관성: ${consistency}
 심볼 집중: ${top_sym} (${conc_check})
+비용 드래그: ${cost_drag} (${cost_check})
 
-${auto_live:+🚀 <b>Auto-live 승인됨!</b>
-config에서 shadow_mode를 false로 전환합니다.}
-${verdict:+$([ "$verdict" != "PASS" ] && echo "⏸ 추가 검토 필요 — 수동 확인 후 진행")}"
+$([ "$all_pass" = "True" ] && echo "✅ <b>LIVE 전환 승인 대기</b>
+성훈님이 직접 확인 후 수동 전환해주세요.
+Gate 1~4 체크 후 승인하세요." || echo "⏸ <b>추가 검토 필요</b>
+일부 조건 미달. 수동 확인 후 판단하세요.")
 
-    log "100-TRADE JUDGMENT: verdict=${verdict} gross=${gross} est_net=${est_net} consistency=${consistency}"
+<i>자동 전환 없음 - 수동 승인 필요</i>"
 
-    # PASS면 auto-live 전환
-    if [ "$verdict" = "PASS" ] && [ "$auto_live" = "True" ]; then
-        log "AUTO-LIVE: Transitioning to live mode"
-
-        # config.json에서 shadow_mode를 false로 변경
-        cd /home/ubuntu/tv-webhook-trader
-        python3 -c "
-import json
-with open('config/config.json', 'r') as f:
-    cfg = json.load(f)
-cfg['trading']['shadow_mode'] = False
-with open('config/config.json', 'w') as f:
-    json.dump(cfg, f, indent=4)
-print('shadow_mode set to False')
-" 2>/dev/null
-
-        # 서비스 재시작
-        sudo systemctl restart "$SERVICE"
-        sleep 5
-
-        local health=$(curl -s --max-time 5 "$HEALTH_URL" 2>/dev/null || echo "FAIL")
-        if [ "$health" = '{"status":"ok"}' ]; then
-            send_telegram "🚀🚀 <b>LIVE MODE 활성화!</b>
-100건 판정 PASS → 자동 전환 완료.
-서비스 정상 작동 중.
-
-⚠️ 첫 실거래가 시작됩니다!
-킬스위치: DD 30% 초과 시 자동 정지"
-            touch "$LIVE_TRANSITION_FLAG"
-            log "AUTO-LIVE: Service restarted in live mode"
-        else
-            send_telegram "⚠️ <b>Live 전환 후 서비스 이상!</b>
-수동 확인 필요."
-            log "AUTO-LIVE: Service restart failed after transition"
-        fi
-    fi
+    log "100-TRADE JUDGMENT: verdict=${verdict} all_pass=${all_pass} gross=${gross} est_net=${est_net} payoff=${payoff} consistency=${consistency} conc=${top_sym} cost_drag=${cost_drag}"
 
     touch "$MILESTONE_FLAG"
 }
@@ -370,6 +369,21 @@ kill_switch 파일 감지. 서비스 중지됨.
 
     local dd=$(echo "$risk" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('portfolio',{}).get('current_drawdown_pct',0))" 2>/dev/null || echo "0")
     local cb=$(echo "$risk" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('portfolio',{}).get('circuit_breaker_active',False))" 2>/dev/null || echo "False")
+
+    # Validation DD 10% → shadow 복귀 경고 (GPT 권고: 검증 단계에서 8~10%)
+    if [ "$(echo "$dd > 10" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
+        local val_flag="/tmp/watchdog_validation_dd_warn"
+        if [ ! -f "$val_flag" ]; then
+            log "WARN: Validation DD ${dd}% > 10%"
+            send_telegram "⚠️ <b>Validation DD 경고!</b>
+드로다운 ${dd}% (검증 한도 10% 초과)
+검증 단계에서는 8~10%가 shadow 복귀 기준입니다.
+
+Live 전환 후라면 shadow 복귀를 검토하세요.
+Shadow 모드에서는 참고 알림입니다."
+            touch "$val_flag"
+        fi
+    fi
 
     # 드로다운 30% 초과 → 긴급 정지
     if [ "$(echo "$dd > 30" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
