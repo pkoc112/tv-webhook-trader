@@ -128,6 +128,47 @@ public:
         };
     }
 
+    // ── Net Expectancy Check (enhanced: includes funding cost estimate) ──
+    // Uses historical win_rate + avg_win/loss to compute expected net profit
+    // per trade AFTER all costs (fees + slippage + estimated funding).
+    // Returns true if net expectancy > 0.
+    struct NetExpectancy {
+        bool positive{false};
+        double gross_expectancy{0.0};  // before costs
+        double total_cost_pct{0.0};    // round-trip + funding
+        double net_expectancy{0.0};    // after costs
+        double min_win_rate{0.0};      // breakeven win rate at current R:R
+    };
+
+    [[nodiscard]] NetExpectancy check_net_expectancy(
+            const std::string& symbol,
+            double win_rate,
+            double avg_win_pct,
+            double avg_loss_pct,
+            double est_hold_hours = 4.0) const {
+        double rt_cost = 2.0 * (m_taker_fee + get_slippage(symbol)) * 100.0;
+        // Funding cost: 3x per day, pro-rated by hold time
+        double funding_cost = m_funding_default * 100.0 * (est_hold_hours / 8.0);
+        double total_cost = rt_cost + funding_cost;
+
+        double gross_exp = (win_rate * avg_win_pct) - ((1.0 - win_rate) * avg_loss_pct);
+        double net_exp = gross_exp - total_cost;
+
+        // Minimum win rate to break even at current R:R
+        double min_wr = 0.0;
+        if (avg_win_pct + avg_loss_pct > 0) {
+            min_wr = (avg_loss_pct + total_cost) / (avg_win_pct + avg_loss_pct);
+        }
+
+        return {
+            .positive = net_exp > 0,
+            .gross_expectancy = gross_exp,
+            .total_cost_pct = total_cost,
+            .net_expectancy = net_exp,
+            .min_win_rate = min_wr
+        };
+    }
+
     [[nodiscard]] CostAnalysis analyze(const std::string& symbol,
                                         double price, int leverage = 10) const {
         auto tier = get_slippage_tier(symbol);
