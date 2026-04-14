@@ -65,7 +65,9 @@ public:
                     {"sl_price", p.sl_price}, {"tp1_price", p.tp1_price},
                     {"tier", p.tier}, {"strategy", p.strategy},
                     {"is_real", p.is_real},
-                    {"exchange", p.exchange}, {"market_type", p.market_type}
+                    {"exchange", p.exchange}, {"market_type", p.market_type},
+                    {"mae", p.mae}, {"mfe", p.mfe},
+                    {"mae_price", p.mae_price}, {"mfe_price", p.mfe_price}
                 };
             }
 
@@ -81,7 +83,9 @@ public:
                     {"pnl", t.pnl}, {"fee", t.fee},
                     {"entry_price", t.entry_price}, {"exit_price", t.exit_price},
                     {"quantity", t.quantity}, {"strategy", t.strategy},
-                    {"exchange", t.exchange}, {"market_type", t.market_type}
+                    {"exchange", t.exchange}, {"market_type", t.market_type},
+                    {"mae", t.mae}, {"mfe", t.mfe},
+                    {"mae_price", t.mae_price}, {"mfe_price", t.mfe_price}
                 });
             }
 
@@ -166,6 +170,10 @@ private:
                     p.is_real     = pj.value("is_real", false);
                     p.exchange    = pj.value("exchange", std::string("bitget"));
                     p.market_type = pj.value("market_type", std::string("futures"));
+                    p.mae         = pj.value("mae", 0.0);
+                    p.mfe         = pj.value("mfe", 0.0);
+                    p.mae_price   = pj.value("mae_price", 0.0);
+                    p.mfe_price   = pj.value("mfe_price", 0.0);
                     result.positions[key] = p;
                 }
             }

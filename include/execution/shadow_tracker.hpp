@@ -155,6 +155,16 @@ public:
         };
     }
 
+    /// vNext: Reset live-equivalent stats (e.g. after config change or phase transition)
+    void reset_live_equiv_stats() {
+        std::lock_guard lock(m_mtx);
+        m_live_equiv_keys.clear();
+        m_live_equiv_stats = ShadowStats{};
+        m_live_equiv_trades.clear();
+        spdlog::info("[SHADOW] Live-equivalent stats reset");
+        save_state_locked();
+    }
+
     [[nodiscard]] nlohmann::json get_live_equiv_trades_json(size_t limit = 100) const {
         std::lock_guard lock(m_mtx);
         auto arr = nlohmann::json::array();

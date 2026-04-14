@@ -34,6 +34,12 @@ struct ManagedPosition {
     bool   is_real{false};   // true=거래소 실제 포지션, false=shadow/paper
     std::string exchange{"bitget"};     // "bitget" / "upbit"
     std::string market_type{"futures"}; // "futures" / "spot"
+
+    // vNext: MAE/MFE tracking
+    double mae{0.0};           // Maximum Adverse Excursion (worst unrealized loss, >= 0)
+    double mfe{0.0};           // Maximum Favorable Excursion (best unrealized profit, >= 0)
+    double mae_price{0.0};     // Price at MAE point
+    double mfe_price{0.0};     // Price at MFE point
 };
 
 struct RiskDecision {
@@ -120,6 +126,17 @@ public:
         m_cb_daily_loss_pct  = cb.value("daily_loss_pct", 5.0);
         m_cb_weekly_loss_pct = cb.value("weekly_loss_pct", 10.0);
         m_cb_cooldown_min    = cb.value("cooldown_minutes", 60);
+
+        // vNext: Hard Loss Cap -- 진입 시 SL 기반 예상 손실 제한
+        // risk_config 최상위의 "hard_loss_cap" 섹션에서 읽음
+        auto hlc = config.value("hard_loss_cap", nlohmann::json::object());
+        m_hard_loss_cap_enabled = hlc.value("enabled", false);
+        m_hard_loss_cap_pct     = hlc.value("max_loss_per_trade_pct", 1.5);
+        m_hard_loss_cap_usdt    = hlc.value("max_loss_per_trade_usdt", 1.50);
+        if (m_hard_loss_cap_enabled) {
+            spdlog::info("[RISK] Hard loss cap enabled: {:.2f}% / {:.2f} USDT per trade",
+                m_hard_loss_cap_pct, m_hard_loss_cap_usdt);
+        }
     }
 
     // ── Public API ──
@@ -214,6 +231,24 @@ public:
                 if (sl_price > liq_est) {
                     return block("sl_beyond_liquidation",
                         "SL " + fmt2(sl_price) + " > est liq " + fmt2(liq_est) + " (SHORT " + std::to_string(leverage) + "x)");
+                }
+            }
+        }
+
+        // 0c. vNext: Hard Loss Cap -- SL 기반 예상 손실이 한도 초과 시 차단
+        if (m_hard_loss_cap_enabled && sl_price > 0 && price > 0 && qty > 0) {
+            bool is_long = (side == "long" || side == "buy");
+            double sl_dist = is_long ? (price - sl_price) : (sl_price - price);
+            if (sl_dist > 0) {
+                double expected_loss = sl_dist * qty;
+                double pct_limit = balance * (m_hard_loss_cap_pct / 100.0);
+                if (expected_loss > pct_limit) {
+                    return block("hard_loss_cap_pct",
+                        "Expected loss " + fmt2(expected_loss) + " > " + fmt2(m_hard_loss_cap_pct) + "% of balance (" + fmt2(pct_limit) + ")");
+                }
+                if (expected_loss > m_hard_loss_cap_usdt) {
+                    return block("hard_loss_cap_usdt",
+                        "Expected loss " + fmt2(expected_loss) + " > hard cap " + fmt2(m_hard_loss_cap_usdt) + " USDT");
                 }
             }
         }
@@ -490,6 +525,11 @@ private:
     double m_cb_daily_loss_pct{5.0};
     double m_cb_weekly_loss_pct{10.0};
     int    m_cb_cooldown_min{60};
+
+    // vNext: Hard Loss Cap (진입 시 SL 기반 예상 손실 제한)
+    bool   m_hard_loss_cap_enabled{false};
+    double m_hard_loss_cap_pct{1.5};      // max_loss_per_trade_pct
+    double m_hard_loss_cap_usdt{1.50};    // max_loss_per_trade_usdt
 };
 
 } // namespace hft

@@ -11,7 +11,7 @@ SERVICE="tv-webhook-trader"
 TELEGRAM_SERVICE="telegram-alert"
 HEALTH_URL="http://localhost:5000/health"
 API_URL="http://localhost:5000/api"
-AUTH_HEADER="Authorization: Basic $(echo -n 'admin:changeme' | base64)"
+AUTH_HEADER="Authorization: Basic $(echo -n "${DASHBOARD_AUTH:-admin:changeme}" | base64)"
 LOGFILE="/home/ubuntu/tv-webhook-trader/data/watchdog.log"
 DAILY_REPORT_FLAG="/tmp/watchdog_daily_sent"
 
@@ -203,10 +203,10 @@ PnL: ${le_pnl} | 승률: ${le_wr}%
     le_trades=$(curl -s --max-time 10 -H "$AUTH_HEADER" "$API_URL/shadow/live-equiv-trades" 2>/dev/null || echo "[]")
 
     local judgment
-    judgment=$(python3 -c "
-import json, sys
+    judgment=$(LE_JSON="$le" python3 -c "
+import json, sys, os
 
-le = json.loads('${le//\'/\\\'}')
+le = json.loads(os.environ['LE_JSON'])
 trades = json.loads(sys.stdin.read())
 
 closes = le.get('total_closes', 0)

@@ -1,0 +1,119 @@
+name: Build, Test & Deploy
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - '**.md'
+      - 'config/**'
+  pull_request:
+    branches: [master]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache CMake build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: ${{ runner.os }}-cmake-${{ hashFiles('CMakeLists.txt', 'src/**', 'include/**') }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake \
+            libboost-all-dev libssl-dev libspdlog-dev libfmt-dev \
+            cppcheck
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON
+          cmake --build build -j$(nproc)
+
+      - name: Unit Tests
+        run: cd build && ctest --output-on-failure
+
+      - name: Static Analysis
+        run: |
+          cppcheck --enable=warning,performance --error-exitcode=1 \
+            --suppress=missingInclude --suppress=unusedFunction \
+            -I include src/ 2>&1 || true
+
+      - name: Upload binary
+        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tv_webhook_trader
+          path: build/tv_webhook_trader
+          retention-days: 7
+
+  deploy:
+    needs: build-and-test
+    runs-on: ubuntu-22.04
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: tv_webhook_trader
+
+      - name: Deploy to EC2
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          # Upload new binary
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key \
+            tv_webhook_trader ubuntu@$EC2_HOST:/home/ubuntu/tv-webhook-trader/build/tv_webhook_trader.new
+
+          # Deploy with rollback on failure
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key ubuntu@$EC2_HOST << 'DEPLOY'
+            set -e
+            cd /home/ubuntu/tv-webhook-trader
+
+            # Backup current binary
+            cp build/tv_webhook_trader build/tv_webhook_trader.bak 2>/dev/null || true
+
+            # Stop, swap, start
+            sudo systemctl stop tv-webhook-trader
+            mv build/tv_webhook_trader.new build/tv_webhook_trader
+            chmod +x build/tv_webhook_trader
+            sudo systemctl start tv-webhook-trader
+
+            # Health check (wait up to 15s)
+            for i in $(seq 1 15); do
+              if curl -sf http://localhost:5000/health > /dev/null 2>&1; then
+                echo "DEPLOY_SUCCESS: Health check passed after ${i}s"
+                exit 0
+              fi
+              sleep 1
+            done
+
+            # Rollback on failure
+            echo "DEPLOY_ROLLBACK: Health check failed, rolling back..."
+            sudo systemctl stop tv-webhook-trader
+            mv build/tv_webhook_trader.bak build/tv_webhook_trader 2>/dev/null || true
+            sudo systemctl start tv-webhook-trader
+            exit 1
+          DEPLOY
+
+      - name: Deploy scripts
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key \
+            scripts/watchdog.sh scripts/daily_quality_report.py \
+            ubuntu@$EC2_HOST:/home/ubuntu/tv-webhook-trader/scripts/
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key ubuntu@$EC2_HOST \
+            "chmod +x /home/ubuntu/tv-webhook-trader/scripts/watchdog.sh"

@@ -1,0 +1,65 @@
+{
+    "api_keys_path": "config/api_keys.json",
+    "log_level": "info",
+    "server_threads": 4,
+    "dashboard_port": 5000,
+    "static_dir": "static",
+
+    "webhook": {
+        "bind_address": "0.0.0.0",
+        "port": 8443,
+        "ssl_cert": "/etc/letsencrypt/live/yourdomain.com/fullchain.pem",
+        "ssl_key": "/etc/letsencrypt/live/yourdomain.com/privkey.pem",
+        "auth_token": "YOUR_SECRET_TOKEN_HERE",
+        "allowed_ips": []
+    },
+
+    "trading": {
+        "default_size": 0.01,
+        "trade_amount_usdt": 20.0,
+        "default_leverage": 3,
+        "num_workers": 2,
+        "order_rate_limit": 9.0,
+        "tpsl_rate_limit": 9.0,
+        "shadow_mode": true,
+        "auto_live": true,
+        "backup_sl_pct": 0.015,
+        "symbols": [
+            "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+            "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT", "POLUSDT",
+            "NEARUSDT", "SUIUSDT", "APTUSDT", "ARBUSDT", "OPUSDT",
+            "INJUSDT", "TIAUSDT", "SEIUSDT", "JUPUSDT", "RENDERUSDT",
+            "DOGEUSDT", "SHIBUSDT", "PEPEUSDT", "WIFUSDT", "FLOKIUSDT",
+            "BOMEUSDT", "1000BONKUSDT",
+            "AAVEUSDT", "UNIUSDT", "LDOUSDT", "PENDLEUSDT", "DYDXUSDT",
+            "GMXUSDT", "CRVUSDT",
+            "ATOMUSDT", "ICPUSDT", "FILUSDT", "HBARUSDT", "TONUSDT",
+            "STXUSDT", "MANTAUSDT", "KASUSDT",
+            "FETUSDT", "IMXUSDT", "GRTUSDT", "TAOUSDT", "VIRTUALUSDT",
+            "ONDOUSDT", "ENAUSDT", "EIGENUSDT", "HYPEUSDT", "ORDIUSDT",
+            "RUNEUSDT", "TRXUSDT", "LTCUSDT", "BCHUSDT", "ETCUSDT",
+            "SNXUSDT", "COMPUSDT", "SONICUSDT",
+            "LAYERUSDT", "MOVEUSDT", "PNUTUSDT",
+            "GALAUSDT", "SANDUSDT", "MANAUSDT"
+        ],
+        "symbol_config": {
+            "BTCUSDT": { "size": 0.001, "leverage": 20 },
+            "ETHUSDT": { "size": 0.01, "leverage": 15 }
+        }
+    },
+
+    "risk": {
+        "max_position_per_symbol": 1.0,
+        "max_daily_loss": 10.0,
+        "max_order_size": 50,
+        "max_open_orders": 10,
+        "circuit_breaker_loss": 20.0,
+        "max_drawdown_pct": 5.0
+    },
+
+    "vnext": {
+        "version": "1.0.0",
+        "shadow_data_dir": "data/vnext",
+        "description": "60m-only + hard loss cap + universe reduction"
+    }
+}

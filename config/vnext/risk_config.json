@@ -1,0 +1,130 @@
+{
+    "_version": "2.0.0-vnext",
+    "_description": "vNext: 60m-only + hard loss cap + tight portfolio",
+
+    "symbol_scoring": {
+        "enabled": true,
+        "min_trades": 20,
+        "rescore_interval_hours": 6,
+        "weights": {
+            "expectancy": 0.35,
+            "profit_factor": 0.25,
+            "win_rate": 0.20,
+            "consistency": 0.10,
+            "frequency_quality": 0.10
+        },
+        "tier_thresholds": {
+            "S": 75, "A": 60, "B": 45, "C": 30, "D": 15
+        },
+        "tier_size_multiplier": {
+            "S": 1.5, "A": 1.2, "B": 1.0, "C": 0.0, "D": 0.0, "X": 0.0
+        },
+        "tier_max_leverage": {
+            "S": 5, "A": 5, "B": 3, "C": 0, "D": 0, "X": 0
+        }
+    },
+
+    "position_sizing": {
+        "method": "dynamic_balance_pct",
+        "kelly_fraction": 0.0,
+        "max_risk_per_trade_pct": 1.0,
+        "min_trade_usdt": 5.0,
+        "max_trade_usdt": 8.0,
+        "base_trade_pct": 10.0,
+        "max_trade_pct": 15.0,
+        "drawdown_levels": [
+            {"threshold": 10.0,  "multiplier": 1.0},
+            {"threshold": 25.0,  "multiplier": 0.75},
+            {"threshold": 40.0,  "multiplier": 0.50},
+            {"threshold": 60.0,  "multiplier": 0.25},
+            {"threshold": 80.0,  "multiplier": 0.10}
+        ]
+    },
+
+    "fee_analysis": {
+        "taker_fee_pct": 0.06,
+        "maker_fee_pct": 0.02,
+        "funding_rate_default_pct": 0.01,
+        "slippage_tiers": {
+            "major": {
+                "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"],
+                "base_bps": 0.5
+            },
+            "mid": {
+                "base_bps": 1.5
+            },
+            "altcoin": {
+                "base_bps": 3.0
+            }
+        },
+        "min_tp_to_cost_ratio": 2.0
+    },
+
+    "portfolio_risk": {
+        "max_concurrent_positions": 3,
+        "max_same_direction": 2,
+        "max_positions_total": 5,
+        "max_positions_per_tf": {
+            "60": 3, "240": 2
+        },
+        "tf_exposure_pct": {
+            "60": 30, "240": 15
+        },
+        "correlation_factor": 0.7,
+        "max_correlated_risk_pct": 50.0,
+        "max_margin_usage_pct": 80.0,
+        "rapid_loss_window_minutes": 10,
+        "rapid_loss_pct": 2.0,
+        "circuit_breaker": {
+            "daily_loss_pct": 3.0,
+            "weekly_loss_pct": 6.0,
+            "cooldown_minutes": 120
+        },
+        "shadow_limits": {
+            "max_concurrent_positions": 100,
+            "max_same_direction": 50,
+            "max_positions_total": 200,
+            "max_margin_usage_pct": 500.0
+        },
+        "live_min_tier": "B"
+    },
+
+    "hard_loss_cap": {
+        "enabled": true,
+        "max_loss_per_trade_pct": 1.5,
+        "max_loss_per_trade_usdt": 1.50,
+        "action": "block_entry"
+    },
+
+    "learner": {
+        "enabled": true,
+        "min_trades_filter": 10,
+        "blacklist_min_trades": 8,
+        "blacklist_win_rate": 0.30,
+        "cooldown_consecutive_losses": 3,
+        "cooldown_minutes": 30,
+        "min_trades_quality": 8,
+        "quality_skip_threshold": 0.25,
+        "kelly_min_trades": 50,
+        "kelly_fraction_cap": 0.0
+    },
+
+    "live_readiness": {
+        "min_trades_ready": 30,
+        "min_trades_proven": 40,
+        "min_grade_ready": "B",
+        "min_grade_proven": "A",
+        "min_symbols_for_live": 3,
+        "require_positive_pnl": true,
+        "max_confidence": 10
+    },
+
+    "tf_filters": {
+        "1":   {"size_multiplier": 0.0, "min_tier": "B", "min_tp_to_cost_ratio": 2.5, "block_reverse": true},
+        "5":   {"size_multiplier": 0.0, "min_tier": "B", "min_tp_to_cost_ratio": 2.5, "block_reverse": true},
+        "15":  {"size_multiplier": 0.0, "min_tier": "B", "min_tp_to_cost_ratio": 2.5, "block_reverse": true},
+        "30":  {"size_multiplier": 0.0, "min_tier": "B", "min_tp_to_cost_ratio": 2.5, "block_reverse": true},
+        "60":  {"size_multiplier": 1.0, "min_tier": "B", "min_tp_to_cost_ratio": 2.0, "block_reverse": false},
+        "240": {"size_multiplier": 0.5, "min_tier": "A", "min_tp_to_cost_ratio": 2.5, "block_reverse": true}
+    }
+}

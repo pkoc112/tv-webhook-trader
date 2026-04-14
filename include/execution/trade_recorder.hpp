@@ -95,6 +95,16 @@ public:
 
         record_trade(pos.symbol, pos.timeframe, exit_reason,
                      pos.entry_price, exit_price, close_qty, pnl, fee, pos.strategy);
+
+        // vNext: MAE/MFE를 ManagedPosition에서 TradeRecord로 복사
+        if (!m_trades.empty()) {
+            auto& last = m_trades.back();
+            last.mae       = pos.mae;
+            last.mfe       = pos.mfe;
+            last.mae_price = pos.mae_price;
+            last.mfe_price = pos.mfe_price;
+        }
+
         return pnl;
     }
 
@@ -113,6 +123,16 @@ public:
 
         record_trade(pos.symbol, pos.timeframe, "WS_CLOSE",
                      pos.entry_price, exit_price, pos.quantity, pnl, fee, pos.strategy);
+
+        // vNext: MAE/MFE를 ManagedPosition에서 TradeRecord로 복사
+        if (!m_trades.empty()) {
+            auto& last = m_trades.back();
+            last.mae       = pos.mae;
+            last.mfe       = pos.mfe;
+            last.mae_price = pos.mae_price;
+            last.mfe_price = pos.mfe_price;
+        }
+
         return pnl;
     }
 

@@ -45,6 +45,12 @@ struct TradeRecord {
     double net_pnl{0.0};         // PnL after fees (= gross_pnl - fee_cost)
     double fee_cost{0.0};        // entry fee + exit fee
     double realized_rr{0.0};     // actual_pnl_net / planned_risk
+
+    // vNext: MAE/MFE tracking (copied from ManagedPosition at close time)
+    double mae{0.0};             // Maximum Adverse Excursion (worst unrealized loss, >= 0)
+    double mfe{0.0};             // Maximum Favorable Excursion (best unrealized profit, >= 0)
+    double mae_price{0.0};       // Price at MAE point
+    double mfe_price{0.0};       // Price at MFE point
 };
 
 inline void from_json(const nlohmann::json& j, TradeRecord& t) {
@@ -65,6 +71,11 @@ inline void from_json(const nlohmann::json& j, TradeRecord& t) {
         t.net_pnl      = j.value("net_pnl", 0.0);
         t.fee_cost     = j.value("fee_cost", 0.0);
         t.realized_rr  = j.value("realized_rr", 0.0);
+        // vNext: MAE/MFE (backward-compatible: default 0)
+        t.mae          = j.value("mae", 0.0);
+        t.mfe          = j.value("mfe", 0.0);
+        t.mae_price    = j.value("mae_price", 0.0);
+        t.mfe_price    = j.value("mfe_price", 0.0);
     } catch (...) {}
 }
 
