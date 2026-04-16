@@ -1138,9 +1138,20 @@ private:
         }
 
         // TF 사이즈 배수
+        double tf_size_mult = 1.0;
         if (tf_it != m_trading.tf_filters.end()) {
-            sz.qty *= tf_it->second.size_multiplier;
-            sz.usdt_amount *= tf_it->second.size_multiplier;
+            tf_size_mult = tf_it->second.size_multiplier;
+            sz.qty *= tf_size_mult;
+            sz.usdt_amount *= tf_size_mult;
+        }
+
+        // vNext: TF 완전 차단 (size_multiplier=0.0) → live-equiv 마킹 전에 skip
+        // 이 체크가 없으면 아래 MIN_NOTIONAL 복원 로직이 필터를 우회시킴
+        if (tf_size_mult <= 0.0) {
+            spdlog::info("[W-{}] SKIP {}: TF {} blocked (size_multiplier=0)",
+                wid, sig.symbol, tf);
+            m_risk_skips.fetch_add(1);
+            return;
         }
 
         // L4: 학습 기반 사이즈 배율 적용
@@ -1153,7 +1164,7 @@ private:
 
         // 거래소 최소 주문금액 보장 (Bitget 5 USDT)
         constexpr double MIN_NOTIONAL_USDT = 5.5;  // 5 USDT + 마진
-        if (sig.price > 0 && sz.usdt_amount < MIN_NOTIONAL_USDT) {
+        if (sig.price > 0 && sz.usdt_amount > 0 && sz.usdt_amount < MIN_NOTIONAL_USDT) {
             sz.qty = MIN_NOTIONAL_USDT / sig.price;
             sz.usdt_amount = MIN_NOTIONAL_USDT;
         }
